@@ -79,6 +79,7 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     needs: autoformat
+    environment: codecov
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,5 +94,5 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage/cobertura.xml
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
