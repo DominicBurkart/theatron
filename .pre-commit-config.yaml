@@ -1,0 +1,107 @@
+repos:
+- repo:                     https://github.com/pre-commit/pre-commit-hooks
+  rev:                      v5.0.0
+  hooks:
+    - id:                   trailing-whitespace
+      exclude_types:        ["svg"]
+    - id:                   mixed-line-ending
+      exclude_types:        ["svg"]
+    - id:                   check-merge-conflict
+    - id:                   check-toml
+    - id:                   check-yaml
+- repo:                     local
+  hooks:
+        -   id:             format
+            name:           Cargo Fmt
+            description:    Runs `cargo fmt --all -- --check` to verify formatting.
+            entry:          bash -c 'cargo fmt --all -- --check'
+            language:       system
+            types:          [rust]
+            pass_filenames: false
+
+        -   id:             clippy
+            name:           Cargo Clippy
+            description:    Runs `cargo clippy --all-features --all-targets -- -D warnings`.
+            entry:          bash -c 'cargo clippy --all-features --all-targets -- -D warnings'
+            language:       system
+            types:          [rust]
+            pass_filenames: false
+
+        -   id:             test
+            name:           Cargo Test
+            description:    Runs `cargo test --all-features`.
+            entry:          bash -c 'cargo test --all-features'
+            language:       system
+            types:          [rust]
+            pass_filenames: false
+
+        -   id:             audit
+            name:           Cargo Audit
+            description:    Checks for security vulnerabilities in dependencies.
+            entry:          bash -c 'cargo audit'
+            language:       system
+            pass_filenames: false
+            files:          'Cargo\.(toml|lock)$'
+            verbose:        true
+
+        -   id:             deny
+            name:           Cargo Deny
+            description:    Checks dependencies for license/supply-chain issues.
+            entry:          bash -c 'cargo deny check'
+            language:       system
+            pass_filenames: false
+            files:          'Cargo\.(toml|lock)$'
+
+        -   id:             coverage
+            name:           Coverage Check
+            description:    Ensures test coverage doesn't decrease from main branch.
+            entry:          bash
+            args:
+                - -c
+                - |
+                    NEW=$(cargo tarpaulin --skip-clean --ignore-tests -q 2>/dev/null | grep -oP "\d+\.\d+(?=% coverage)" || echo "0")
+                    BRANCH=$(git rev-parse --abbrev-ref HEAD)
+                    if [[ "$BRANCH" == "main" ]]; then
+                        echo "✅ Coverage: $NEW% (main branch)"
+                        exit 0
+                    fi
+                    git stash -q 2>/dev/null || true
+                    git checkout main -q 2>/dev/null
+                    OLD=$(cargo tarpaulin --skip-clean --ignore-tests -q 2>/dev/null | grep -oP "\d+\.\d+(?=% coverage)" || echo "0")
+                    git checkout - -q
+                    git stash pop -q 2>/dev/null || true
+                    if (( $(echo "$NEW >= $OLD" | bc -l 2>/dev/null || echo "0") )); then
+                        echo "✅ Coverage: $NEW% >= $OLD%"
+                        exit 0
+                    else
+                        echo "❌ Coverage dropped: $NEW% < $OLD%"
+                        exit 1
+                    fi
+            language:       system
+            pass_filenames: false
+            types:          [rust]
+
+        -   id:             security-review
+            name:           Security Review
+            description:    Uses Claude to review changes for security issues.
+            entry:          bash
+            args:
+                - -c
+                - |
+                    if ! command -v claude &> /dev/null; then
+                        echo "⚠️  Claude CLI not found, skipping security review"
+                        exit 0
+                    fi
+                    REVIEW=$(git diff --cached | claude "You are a security engineer. Review the code being committed to determine if it can be committed/pushed. Does this commit leak any secrets, tokens, sensitive internals, or PII? If so, return a list of security/compliance problems to fix before the commit can be completed. If there are no issues, respond with: NO SECURITY ISSUES FOUND" 2>/dev/null | tee /tmp/claude_review)
+                    if echo "$REVIEW" | grep -qi "NO SECURITY ISSUES FOUND"; then
+                        echo "✅ Security review passed"
+                        exit 0
+                    elif echo "$REVIEW" | grep -qi "problem\|secret\|token\|pii\|leak\|vulnerability"; then
+                        echo "🚨 Security issues found above. Please fix before committing."
+                        exit 1
+                    else
+                        echo "⚠️  Unable to parse security review, proceeding with caution"
+                        exit 0
+                    fi
+            language:       system
+            pass_filenames: false

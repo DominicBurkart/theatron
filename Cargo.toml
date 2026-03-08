@@ -1,0 +1,21 @@
+[package]
+name = "theatron"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+license = "MIT OR Apache-2.0"
+authors = ["Dominic Burkart"]
+
+[[bin]]
+name = "theatron"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+proptest = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
