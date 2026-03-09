@@ -2,7 +2,7 @@
 
 ## Project Goal
 
-theatron is a simulation framework for evaluating, comparing, and designing MAC-level and above LoRa protocols. The aim is to enable rigorous, reproducible protocol research: implement a protocol once against a common trait interface, run it through a shared simulation engine, and get comparable metrics.
+theatron is a simulation and evaluation framework that models network-level effects (propagation, interference, contention, adversarial scenarios) to compare protocol implementations under controlled, reproducible conditions. Protocol implementations are external. Any `Protocol` trait implementor can be evaluated — different protocols, different implementations of the same protocol, same implementation with different parameters. LoRaWAN via lora-rs is the first validation target. Outputs help clients with stack selection and inform protocol development outside theatron.
 
 ## Evaluation Dimensions
 
@@ -11,7 +11,7 @@ theatron targets multiple dimensions of protocol evaluation:
 - **Performance under interference**: throughput vs spreading factor, saturated band scenarios, co-channel contention
 - **Parameter optimization**: SF, bandwidth, coding rate, and TX power tradeoffs
 - **Scalability**: throughput and latency degradation as node count grows
-- **Reliability**: packet delivery ratio, retransmission overhead, join success rate
+- **Reliability**: packet delivery ratio, retransmission overhead, protocol-specific session establishment metrics (e.g. join success rate in LoRaWAN)
 - **Energy efficiency**: time-on-air as a proxy for battery impact
 - **Security and resilience**: adversarial scenarios including replay attacks, jamming, band flooding, and eavesdropping; adversaries may be external or internal (compromised nodes)
 
@@ -53,29 +53,31 @@ struct Transmission {
 
 `update` drives timer-based state transitions (e.g. RX1/RX2 window opening in LoRaWAN Class A) without requiring an incoming frame.
 
-#### Two integration levels
+#### Two ways external protocol implementations connect to theatron
 
-**Wrapper integration (primary path)**: the protocol impl wraps a real upstream crate, delegating all state machine logic. The theatron `Protocol` trait becomes a thin adapter. This is the correct approach for LoRaWAN Class A/B/C.
+**Adapter integration**: a thin adapter wraps an external crate (e.g. `lorawan-device`). Protocol logic stays entirely in the external crate; the adapter implements the `Protocol` trait to bridge it into the simulation.
 
-**Trait-level reimplementation**: for novel research protocols that have no upstream implementation. theatron provides the scaffolding; the researcher provides the state machine. The typestate pattern (described below) is available for compile-time correctness validation.
+**Direct trait implementation**: a protocol implemented externally against the `Protocol` trait directly, for protocols without an existing crate.
 
-#### Static state machine validation for novel protocols
+#### Recommended pattern for external implementors: static state machine validation
 
-For protocols implemented directly in theatron (not wrappers), the typestate pattern can encode valid state transitions at the type level:
+For protocols implemented directly against the `Protocol` trait, the typestate pattern can encode valid state transitions at the type level:
 
 ```rust
 struct Idle;
 struct Transmitting { started: SimTime }
 struct RxWindow1 { tx_end: SimTime }
 
-impl Protocol for LoRaWanClassA<Idle> { ... }
-impl Protocol for LoRaWanClassA<Transmitting> { ... }
-impl Protocol for LoRaWanClassA<RxWindow1> { ... }
+impl Protocol for MyProtocol<Idle> { ... }
+impl Protocol for MyProtocol<Transmitting> { ... }
+impl Protocol for MyProtocol<RxWindow1> { ... }
 ```
 
-Invalid transitions become compile errors. For `lorawan-device` wrappers, correctness comes from the upstream crate's own state machine.
+Invalid transitions become compile errors. For adapter integrations, correctness comes from the upstream crate's own state machine.
 
-#### LoRaWAN Class A state flow (reference)
+#### LoRaWAN Class A state flow (validation target reference)
+
+The following illustrates the validation target's state machine for reference:
 
 ```mermaid
 stateDiagram-v2
@@ -87,17 +89,17 @@ stateDiagram-v2
     RxWindow2 --> Idle : downlink received or window closed
 ```
 
-### lora-rs Ecosystem Integration
+### Validation Target: LoRaWAN via lora-rs
 
-theatron integrates with the lora-rs ecosystem rather than reimplementing LoRaWAN:
+LoRaWAN via lora-rs is the first real-world protocol used to prove the simulation engine works with a real stack. The validation adapter uses:
 
 - **`lorawan`**: frame parsing and creation, MIC verification, MAC command handling. `RxMetadata.payload` and `Transmission.payload` are raw bytes parsed via `lorawan::parser::PhyPayload`.
-- **`lorawan-device`**: real Class A/B/C state machine via `nb_device`. theatron drives it by implementing `PhyRxTx` on a `SimulatedRadio` struct that bridges to the simulated channel.
+- **`lorawan-device`**: real Class A state machine via `nb_device`. The adapter drives it by implementing `PhyRxTx` on a `SimulatedRadio` struct that bridges to the simulated channel.
 - **`lora-modulation`**: SF, bandwidth, and time-on-air calculations. Used in the channel model and energy-efficiency metrics.
 
-Principle: integrate, don't reimplement. theatron's value is the simulation harness and evaluation infrastructure, not a LoRaWAN stack.
-
 #### SimulatedRadio sketch
+
+`SimulatedRadio` is theatron's bridge between its simulated channel and an external protocol crate's radio interface.
 
 ```rust
 struct SimulatedRadio {
@@ -122,7 +124,7 @@ The `lorawan-device` state machine calls `tx` and `rx` on `SimulatedRadio`; thea
 
 ### Channel / Medium
 
-A shared simulation object that models the physical LoRa channel: propagation delay, collision detection, RSSI and SNR derivation, SF orthogonality approximation, and time-on-air gating. The channel carries `Vec<u8>` payloads alongside `TxMetadata` (SF, bandwidth, frequency, TX power). Protocols parse the raw bytes via the `lorawan` crate; the channel remains format-agnostic.
+A shared simulation object that models the physical wireless channel: propagation delay, collision detection, RSSI and SNR derivation, SF orthogonality approximation, and time-on-air gating. The channel model is parameterized; in the validation case it is configured for LoRa using `lora-modulation`. The channel carries `Vec<u8>` payloads alongside `TxMetadata` (SF, bandwidth, frequency, TX power). Protocol adapters parse the raw bytes via their respective crates; the channel remains format-agnostic.
 
 All communication flows through the channel — protocols and interference sources do not interact directly.
 
@@ -147,25 +149,30 @@ Planned interference models:
 
 ### Metrics collection
 
-A passive observer attached to the simulation that records per-protocol, per-run statistics: throughput (frames/s per SF), PDR, latency distribution, time-on-air, retransmission count, join success rate, and protocol-specific counters. Output in a structured format suitable for statistical comparison across runs.
+A passive observer attached to the simulation that records per-protocol, per-run statistics: throughput (frames/s per SF), PDR, latency distribution, time-on-air, retransmission count, protocol-specific session establishment metrics (e.g. join success rate in LoRaWAN), and protocol-specific counters. Output in a structured format suitable for statistical comparison across runs.
+
+### Hardware measurement tooling (potential expansion)
+
+To ground simulations in real-world conditions, theatron may include tooling for capturing LoRa hardware connection characteristics — RSSI profiles, SNR distributions, interference patterns, and timing measurements from physical deployments. These measurements would be uploaded as empirical channel model inputs, allowing simulations to reflect actual deployment conditions.
 
 ## Phased Roadmap
 
-### Phase 1 — lorawan integration and baseline simulation
+### Phase 1 — Core simulation engine (validated with LoRaWAN Class A)
 
 - Discrete-event time model (`SimTime` as a monotonic tick)
-- Channel model using `lora-modulation` types: SF orthogonality approximation, collision detection, propagation delay, RSSI/SNR derivation
-- `SimulatedRadio` implementing `PhyRxTx`, bridging to the channel
-- LoRaWAN Class A wrapper driving `lorawan-device::nb_device`
+- Channel model: parameterized propagation, collision detection, RSSI/SNR derivation (configured for LoRa via `lora-modulation`)
+- Simulation scheduler
+- `Protocol` trait and `SimulatedRadio` bridge
+- *Validation*: LoRaWAN Class A adapter wrapping `lorawan-device::nb_device`
 - Interference models: saturated band, periodic interferer
-- Metrics: throughput per SF, PDR, time-on-air
-- **Integration test**: SF7–SF12 throughput under clean, saturated, and periodic-interference channel conditions
+- Metrics: throughput, PDR, time-on-air
+- **Integration test**: SF7–SF12 under clean, saturated, and periodic-interference channel conditions
 
-### Phase 2 — Pure ALOHA baseline and protocol comparison
+### Phase 2 — Multi-protocol comparison
 
-- Pure ALOHA trait-level implementation as performance baseline
+- Pure ALOHA as trivial reference implementation for multi-protocol validation
 - Multi-protocol simulation: run N protocol instances in the same channel simultaneously
-- Comparison output: side-by-side metrics across protocol variants and SF configurations
+- Comparison output: side-by-side metrics across protocol variants and parameterizations
 
 ### Phase 3 — Expanded interference and adversarial models
 
@@ -180,10 +187,11 @@ A passive observer attached to the simulation that records per-protocol, per-run
 - Parameter sweep runner: iterate over SF, bandwidth, node count, interference intensity
 - CI integration: regression detection on protocol performance
 
-### Phase 5 — Extended protocol support and static validation tooling
+### Phase 5 — Framework generalization and extended tooling
 
-- LoRaWAN Class B and Class C wrappers
-- Typestate validation helpers for novel protocol implementations
+- Parameterizable channel models beyond LoRa
+- Hardware measurement tooling: capture real LoRa hardware characteristics (RSSI profiles, interference patterns, timing) for upload as empirical channel model inputs
+- Typestate validation helpers for external protocol implementors
 - Optional report generation and dashboard
 
 ## Key Design Decisions (open for discussion)
@@ -194,19 +202,19 @@ A passive observer attached to the simulation that records per-protocol, per-run
 
 ### Discrete-event vs continuous time
 
-**Proposal: discrete-event.** LoRa symbol timing is discrete at the physical layer. Discrete-event simulation is simpler to reason about, deterministic, and fast. Continuous time adds little value for MAC-level analysis.
+**Proposal: discrete-event.** Wireless symbol timing (e.g. LoRa) is discrete at the physical layer. Discrete-event simulation is simpler to reason about, deterministic, and fast. Continuous time adds little value for MAC-level analysis.
 
 ### Frame representation
 
-**Concrete: the channel carries `Vec<u8>` + `TxMetadata`.** Protocols use the `lorawan` crate to parse and construct frames. The channel stays format-agnostic; type safety lives at the protocol layer, not the channel layer.
+**Concrete: the channel carries `Vec<u8>` + `TxMetadata`.** Protocol adapters use their respective crates (e.g. `lorawan` for LoRaWAN) to parse and construct frames. The channel stays format-agnostic; type safety lives at the protocol layer, not the channel layer.
 
 ### Interference source visibility
 
 **Proposal: interference sources observe the channel at the physical layer** (pre-collision-resolution), matching real-world RF capability. They cannot inspect node-internal state unless explicitly modeled as compromised nodes.
 
-### Integrate, don't reimplement
+### Protocol logic lives outside theatron
 
-**Principle: use lora-rs crates for all LoRaWAN logic.** theatron's value is the simulation harness and evaluation tooling. Reimplementing `lorawan-device` internals would be duplicated effort and would diverge from the real stack. Novel protocol research goes through the `Protocol` trait directly, not through reimplementation of existing standards.
+**Principle: theatron's value is the simulation engine, channel model, and evaluation infrastructure.** Protocol implementations — whether adapting existing crates or built from scratch — are external. theatron provides the `Protocol` trait contract and the simulated medium; protocol authors provide the state machines.
 
 ### Randomness
 
