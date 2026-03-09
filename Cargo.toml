@@ -5,6 +5,10 @@ edition = "2024"
 resolver = "3"
 license = "MIT OR Apache-2.0"
 authors = ["Dominic Burkart"]
+description = "Simulation framework for evaluating and comparing wireless protocol implementations under network-level effects"
+repository = "https://github.com/DominicBurkart/theatron"
+keywords = ["lora", "lorawan", "protocol", "simulation", "wireless"]
+categories = ["simulation", "network-programming"]
 
 [[bin]]
 name = "theatron"
