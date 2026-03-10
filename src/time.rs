@@ -1,9 +1,34 @@
+/// Simulation time in microseconds.
+///
+/// # Examples
+///
+/// ```
+/// use theatron::time::SimTime;
+/// let t: SimTime = 1_000;
+/// assert_eq!(t, 1_000);
+/// ```
 pub type SimTime = u64;
 
+/// Convert simulation time (microseconds) to milliseconds.
+///
+/// # Examples
+///
+/// ```
+/// use theatron::time::sim_time_to_ms;
+/// assert_eq!(sim_time_to_ms(5_000), 5);
+/// ```
 pub fn sim_time_to_ms(t: SimTime) -> u32 {
     (t / 1_000) as u32
 }
 
+/// Convert milliseconds to simulation time (microseconds).
+///
+/// # Examples
+///
+/// ```
+/// use theatron::time::ms_to_sim_time;
+/// assert_eq!(ms_to_sim_time(5), 5_000);
+/// ```
 pub fn ms_to_sim_time(ms: u32) -> SimTime {
     ms as u64 * 1_000
 }
