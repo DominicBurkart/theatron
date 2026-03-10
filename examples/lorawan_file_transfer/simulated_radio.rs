@@ -129,3 +129,85 @@ impl Timings for SimulatedRadio {
         100
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_bb() -> BaseBandModulationParams {
+        BaseBandModulationParams::new(SpreadingFactor::_7, Bandwidth::_125KHz, CodingRate::_4_5)
+    }
+
+    fn make_rf() -> RfConfig {
+        RfConfig {
+            frequency: 868_100_000,
+            bb: make_bb(),
+        }
+    }
+
+    #[test]
+    fn new_radio_no_pending_tx() {
+        let mut radio = SimulatedRadio::new();
+        assert!(radio.take_pending_tx().is_none());
+    }
+
+    #[test]
+    fn new_radio_no_pending_downlink() {
+        let radio = SimulatedRadio::new();
+        assert!(!radio.has_pending_downlink());
+    }
+
+    #[test]
+    fn inject_downlink_populates_rx_buf() {
+        let mut radio = SimulatedRadio::new();
+        radio.inject_downlink(vec![0x01, 0x02, 0x03]);
+        assert_eq!(radio.get_received_packet(), &[0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn tx_request_populates_pending_tx() {
+        let mut radio = SimulatedRadio::new();
+        let tx_config = TxConfig {
+            pw: 14,
+            rf: make_rf(),
+        };
+        let payload = [0x01, 0x02, 0x03];
+        let result = radio.handle_event(Event::TxRequest(tx_config, &payload));
+        assert!(result.is_ok());
+        let tx = radio.take_pending_tx().expect("should have pending tx");
+        assert_eq!(tx.sf, 7);
+        assert_eq!(tx.frequency, 868_100_000);
+        assert_eq!(tx.payload, &[0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn rx_request_then_cancel() {
+        let mut radio = SimulatedRadio::new();
+        let result = radio.handle_event(Event::RxRequest(make_rf()));
+        assert!(matches!(result, Ok(Response::Rxing)));
+        let result = radio.handle_event(Event::CancelRx);
+        assert!(matches!(result, Ok(Response::Idle)));
+    }
+
+    #[test]
+    fn phy_with_downlink_returns_rx_done() {
+        let mut radio = SimulatedRadio::new();
+        radio.inject_downlink(vec![0xAB]);
+        let result = radio.handle_event(Event::Phy(()));
+        assert!(matches!(result, Ok(Response::RxDone(_))));
+    }
+
+    #[test]
+    fn phy_without_downlink_returns_idle() {
+        let mut radio = SimulatedRadio::new();
+        let result = radio.handle_event(Event::Phy(()));
+        assert!(matches!(result, Ok(Response::Idle)));
+    }
+
+    #[test]
+    fn timings_values() {
+        let radio = SimulatedRadio::new();
+        assert_eq!(radio.get_rx_window_offset_ms(), 0);
+        assert_eq!(radio.get_rx_window_duration_ms(), 100);
+    }
+}
