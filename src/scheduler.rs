@@ -7,6 +7,28 @@ use crate::time::SimTime;
 use crate::traits::InterferenceSource;
 use crate::types::{NodeId, RxMetadata, Transmission};
 
+/// A handle to a simulation node, allowing the scheduler to drive it.
+///
+/// # Examples
+///
+/// ```
+/// use theatron::scheduler::{NodeHandle, Scheduler};
+/// use theatron::time::SimTime;
+/// use theatron::types::{NodeId, RxMetadata, Transmission};
+///
+/// struct Ping { id: NodeId }
+///
+/// impl NodeHandle for Ping {
+///     fn node_id(&self) -> NodeId { self.id }
+///     fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> { None }
+///     fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> { None }
+///     fn update(&mut self, _t: SimTime) -> Option<SimTime> { None }
+/// }
+///
+/// let mut sched = Scheduler::new(1_000_000);
+/// sched.add_node(Box::new(Ping { id: NodeId(1) }), None);
+/// sched.run();
+/// ```
 pub trait NodeHandle {
     fn node_id(&self) -> NodeId;
     fn on_receive(&mut self, frame: RxMetadata, time: SimTime) -> Option<SimTime>;
@@ -14,6 +36,20 @@ pub trait NodeHandle {
     fn update(&mut self, time: SimTime) -> Option<SimTime>;
 }
 
+/// The kind of event processed by the scheduler.
+///
+/// # Examples
+///
+/// ```
+/// use theatron::scheduler::EventKind;
+/// use theatron::types::NodeId;
+///
+/// let wake = EventKind::Wake { node_id: NodeId(1) };
+/// match wake {
+///     EventKind::Wake { node_id } => assert_eq!(node_id, NodeId(1)),
+///     _ => panic!("expected Wake"),
+/// }
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EventKind {
     Wake { node_id: NodeId },
@@ -40,6 +76,7 @@ impl PartialOrd for ScheduledEvent {
     }
 }
 
+/// The simulation scheduler, which drives all nodes and interferers.
 pub struct Scheduler {
     events: BinaryHeap<ScheduledEvent>,
     channel: Channel,
@@ -52,6 +89,15 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    /// Create a new scheduler that will stop at `end_time` microseconds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::scheduler::Scheduler;
+    /// let sched = Scheduler::new(60_000_000);
+    /// assert_eq!(sched.current_time(), 0);
+    /// ```
     pub fn new(end_time: SimTime) -> Self {
         Self {
             events: BinaryHeap::new(),
@@ -65,6 +111,28 @@ impl Scheduler {
         }
     }
 
+    /// Register a node with an optional initial wake time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::scheduler::{NodeHandle, Scheduler};
+    /// use theatron::time::SimTime;
+    /// use theatron::types::{NodeId, RxMetadata, Transmission};
+    ///
+    /// struct Silent { id: NodeId }
+    /// impl NodeHandle for Silent {
+    ///     fn node_id(&self) -> NodeId { self.id }
+    ///     fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> { None }
+    ///     fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> { None }
+    ///     fn update(&mut self, _t: SimTime) -> Option<SimTime> { None }
+    /// }
+    ///
+    /// let mut sched = Scheduler::new(1_000_000);
+    /// sched.add_node(Box::new(Silent { id: NodeId(1) }), None);
+    /// sched.run();
+    /// assert_eq!(sched.metrics.total_tx, 0);
+    /// ```
     pub fn add_node(&mut self, node: Box<dyn NodeHandle>, initial_wake: Option<SimTime>) {
         if let Some(wake) = initial_wake {
             let node_id = node.node_id();
@@ -149,6 +217,28 @@ impl Scheduler {
         }
     }
 
+    /// Run the simulation until `end_time` or until there are no more events.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::scheduler::{NodeHandle, Scheduler};
+    /// use theatron::time::SimTime;
+    /// use theatron::types::{NodeId, RxMetadata, Transmission};
+    ///
+    /// struct Noop { id: NodeId }
+    /// impl NodeHandle for Noop {
+    ///     fn node_id(&self) -> NodeId { self.id }
+    ///     fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> { None }
+    ///     fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> { None }
+    ///     fn update(&mut self, _t: SimTime) -> Option<SimTime> { None }
+    /// }
+    ///
+    /// let mut sched = Scheduler::new(1_000_000);
+    /// sched.add_node(Box::new(Noop { id: NodeId(1) }), Some(0));
+    /// sched.run();
+    /// assert!(sched.current_time() <= 1_000_000);
+    /// ```
     pub fn run(&mut self) {
         while let Some(event) = self.events.pop() {
             if event.time > self.end_time {
@@ -217,6 +307,15 @@ impl Scheduler {
         }
     }
 
+    /// Return the current simulation time in microseconds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::scheduler::Scheduler;
+    /// let sched = Scheduler::new(1_000_000);
+    /// assert_eq!(sched.current_time(), 0);
+    /// ```
     pub fn current_time(&self) -> SimTime {
         self.current_time
     }
@@ -265,6 +364,41 @@ mod tests {
 
         fn update(&mut self, _time: SimTime) -> Option<SimTime> {
             self.wake_at.take()
+        }
+    }
+
+    struct PeriodicNode {
+        id: NodeId,
+        period: SimTime,
+        wake_count: u32,
+    }
+
+    impl PeriodicNode {
+        fn new(id: u32, period: SimTime) -> Self {
+            Self {
+                id: NodeId(id),
+                period,
+                wake_count: 0,
+            }
+        }
+    }
+
+    impl NodeHandle for PeriodicNode {
+        fn node_id(&self) -> NodeId {
+            self.id
+        }
+
+        fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> {
+            None
+        }
+
+        fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
+            None
+        }
+
+        fn update(&mut self, time: SimTime) -> Option<SimTime> {
+            self.wake_count += 1;
+            Some(time + self.period)
         }
     }
 
@@ -319,5 +453,23 @@ mod tests {
         let mut scheduler = Scheduler::new(100_000);
         scheduler.add_interferer(Box::new(NoOpInterferer), 0);
         scheduler.run();
+    }
+
+    #[test]
+    fn simulation_stops_at_end_time() {
+        let end_time = 1_000_000u64;
+        let mut scheduler = Scheduler::new(end_time);
+        scheduler.add_node(Box::new(PeriodicNode::new(1, 100_000)), Some(0));
+        scheduler.run();
+        assert!(scheduler.current_time() <= end_time);
+    }
+
+    #[test]
+    fn add_node_without_wake_never_wakes() {
+        let mut scheduler = Scheduler::new(100_000);
+        scheduler.add_node(Box::new(PeriodicNode::new(1, 10_000)), None);
+        scheduler.run();
+        assert_eq!(scheduler.current_time(), 0);
+        assert_eq!(scheduler.metrics.total_tx, 0);
     }
 }
