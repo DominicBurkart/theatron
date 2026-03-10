@@ -38,3 +38,48 @@ impl InterferenceSource for PeriodicInterferer {
         Some(current_time + self.period_us)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_interferer() -> PeriodicInterferer {
+        PeriodicInterferer::new(10_000_000, 7, 868_100_000, 500_000)
+    }
+
+    #[test]
+    fn always_injects() {
+        let mut interferer = make_interferer();
+        let tx = interferer
+            .poll_inject(0)
+            .expect("should always return Some");
+        assert_eq!(tx.sf, 7);
+        assert_eq!(tx.frequency, 868_100_000);
+        assert_eq!(tx.payload, vec![0xFF]);
+        assert_eq!(tx.duration_us, 500_000);
+    }
+
+    #[test]
+    fn next_poll_time_advances_by_period() {
+        let interferer = make_interferer();
+        assert_eq!(interferer.next_poll_time(0), Some(10_000_000));
+        assert_eq!(interferer.next_poll_time(10_000_000), Some(20_000_000));
+        assert_eq!(interferer.next_poll_time(55_000_000), Some(65_000_000));
+    }
+
+    #[test]
+    fn observe_is_noop() {
+        let mut interferer = make_interferer();
+        let event = ChannelEvent::TransmissionStarted {
+            sender: theatron::types::NodeId(1),
+            sf: 7,
+            frequency: 868_100_000,
+            time: 0,
+        };
+        interferer.observe(&event, 0);
+        let tx = interferer
+            .poll_inject(0)
+            .expect("still injects after observe");
+        assert_eq!(tx.sf, 7);
+    }
+}

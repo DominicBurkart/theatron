@@ -47,3 +47,49 @@ impl NodeHandle for NetworkServer {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_frame(payload: Vec<u8>) -> RxMetadata {
+        RxMetadata {
+            payload,
+            rssi: -80.0,
+            snr: 10.0,
+            sf: 7,
+            frequency: 868_100_000,
+            time: 0,
+        }
+    }
+
+    #[test]
+    fn new_server_empty() {
+        let server = NetworkServer::new(NodeId(100));
+        assert_eq!(server.received_fragments().len(), 0);
+        assert_eq!(server.total_bytes_received(), 0);
+    }
+
+    #[test]
+    fn on_receive_accumulates() {
+        let mut server = NetworkServer::new(NodeId(100));
+        server.on_receive(make_frame(vec![0x01, 0x02]), 0);
+        server.on_receive(make_frame(vec![0x03]), 1000);
+        assert_eq!(server.received_fragments().len(), 2);
+        assert_eq!(server.total_bytes_received(), 3);
+    }
+
+    #[test]
+    fn poll_transmit_always_none() {
+        let mut server = NetworkServer::new(NodeId(100));
+        assert!(server.poll_transmit(0).is_none());
+        assert!(server.poll_transmit(1_000_000).is_none());
+    }
+
+    #[test]
+    fn update_always_none() {
+        let mut server = NetworkServer::new(NodeId(100));
+        assert!(server.update(0).is_none());
+        assert!(server.update(1_000_000).is_none());
+    }
+}
