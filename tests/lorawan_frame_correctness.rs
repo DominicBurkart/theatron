@@ -98,6 +98,7 @@ impl PhyRxTx for MinimalRadio {
                     coding_rate: bb.cr.denom() as u8,
                     frequency,
                     duration_us,
+                    tx_power_dbm: tx_config.pw,
                 });
                 Ok(Response::TxDone(0))
             }

@@ -58,6 +58,7 @@ fn main() {
     println!("  Total TX:         {}", m.total_tx);
     println!("  Total RX:         {}", m.total_rx);
     println!("  Collisions:       {}", m.total_collisions);
+    println!("  Captures:         {}", m.total_captures);
     println!("  Total airtime:    {}us", m.total_airtime_us);
     println!("  Node 1 TX:        {}", m.node_tx_count(NodeId(1)));
     println!("  Node 100 RX:      {}", m.node_rx_count(NodeId(100)));

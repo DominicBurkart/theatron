@@ -6,6 +6,7 @@ pub struct MetricsCollector {
     pub total_tx: u64,
     pub total_rx: u64,
     pub total_collisions: u64,
+    pub total_captures: u64,
     pub total_airtime_us: u64,
     per_node_tx: HashMap<NodeId, u64>,
     per_node_rx: HashMap<NodeId, u64>,
@@ -72,6 +73,10 @@ impl MetricsCollector {
         self.total_collisions += 1;
     }
 
+    pub fn record_capture(&mut self) {
+        self.total_captures += 1;
+    }
+
     /// Record airtime used by a transmission.
     ///
     /// # Examples
@@ -130,7 +135,15 @@ mod tests {
         assert_eq!(m.total_tx, 0);
         assert_eq!(m.total_rx, 0);
         assert_eq!(m.total_collisions, 0);
+        assert_eq!(m.total_captures, 0);
         assert_eq!(m.total_airtime_us, 0);
+    }
+
+    #[test]
+    fn record_capture_increments() {
+        let mut m = MetricsCollector::new();
+        m.record_capture();
+        assert_eq!(m.total_captures, 1);
     }
 
     #[test]
