@@ -23,7 +23,7 @@ path = "examples/lorawan_file_transfer/main.rs"
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
 lorawan-device = { version = "0.12", features = ["default-crypto"] }
-lorawan = "0.9"
+lorawan = { version = "0.9", default-features = false, features = ["default-crypto"] }
 lora-modulation = "0.1"
 proptest = "1"
 rand_core = { version = "0.6", default-features = false }
