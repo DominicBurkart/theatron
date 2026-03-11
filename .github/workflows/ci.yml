@@ -2,9 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [ main, architecture-proposal ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, architecture-proposal ]
 
 env:
   CARGO_TERM_COLOR: always

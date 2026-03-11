@@ -399,7 +399,7 @@ mod tests {
         ch.begin_transmission(NodeId(1), &strong, 0);
         ch.begin_transmission(NodeId(2), &weak, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(3), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
     }
@@ -434,7 +434,7 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(3), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(delivered.len(), 0, "delta=5 < threshold=6 → both collide");
     }
 
@@ -446,7 +446,7 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(3), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(
             delivered.len(),
             1,
@@ -464,7 +464,7 @@ mod tests {
         ch.begin_transmission(NodeId(2), &medium, 5_000);
         ch.begin_transmission(NodeId(3), &weak, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(99), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(
             delivered.len(),
             1,
@@ -486,7 +486,7 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(3), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(delivered.len(), 0, "delta=6 < threshold=10 → both collide");
     }
 
@@ -496,7 +496,7 @@ mod tests {
         let tx = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &tx, 0);
         ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(NodeId(2), 50_000);
+        let delivered = ch.deliver_to(50_000);
         assert_eq!(delivered.len(), 1);
         assert!((delivered[0].rssi - (14.0_f32 - 100.0)).abs() < 0.001);
         assert!((delivered[0].snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
