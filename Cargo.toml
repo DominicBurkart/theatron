@@ -14,11 +14,19 @@ categories = ["simulation", "network-programming"]
 name = "theatron"
 path = "src/main.rs"
 
+[[example]]
+name = "lorawan_file_transfer"
+path = "examples/lorawan_file_transfer/main.rs"
+
 [dependencies]
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+lorawan-device = { version = "0.12", features = ["default-crypto"] }
+lorawan = { version = "0.9", default-features = false, features = ["default-crypto"] }
+lora-modulation = "0.1"
 proptest = "1"
+rand_core = { version = "0.6", default-features = false }
 
 [profile.release]
 lto = true

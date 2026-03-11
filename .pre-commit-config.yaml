@@ -65,11 +65,11 @@ repos:
                         echo "✅ Coverage: $NEW% (main branch)"
                         exit 0
                     fi
-                    git stash -q 2>/dev/null || true
+                    git stash --include-untracked -q 2>/dev/null || true
                     git checkout main -q 2>/dev/null
                     OLD=$(cargo tarpaulin --skip-clean --ignore-tests -q 2>/dev/null | grep -oP "\d+\.\d+(?=% coverage)" || echo "0")
                     git checkout - -q
-                    git stash pop -q 2>/dev/null || true
+                    git stash pop --index -q 2>/dev/null || true
                     if (( $(echo "$NEW >= $OLD" | bc -l 2>/dev/null || echo "0") )); then
                         echo "✅ Coverage: $NEW% >= $OLD%"
                         exit 0
