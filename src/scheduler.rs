@@ -402,6 +402,29 @@ mod tests {
         }
     }
 
+    struct WakeOnReceive {
+        id: NodeId,
+        wake_delay_us: u64,
+    }
+
+    impl NodeHandle for WakeOnReceive {
+        fn node_id(&self) -> NodeId {
+            self.id
+        }
+
+        fn on_receive(&mut self, _f: RxMetadata, time: SimTime) -> Option<SimTime> {
+            Some(time + self.wake_delay_us)
+        }
+
+        fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
+            None
+        }
+
+        fn update(&mut self, _t: SimTime) -> Option<SimTime> {
+            None
+        }
+    }
+
     struct NoOpInterferer;
 
     impl InterferenceSource for NoOpInterferer {
@@ -445,6 +468,23 @@ mod tests {
         scheduler.add_node(Box::new(receiver), None);
         scheduler.run();
         assert_eq!(scheduler.metrics.total_tx, 1);
+        assert_eq!(scheduler.metrics.total_rx, 1);
+    }
+
+    #[test]
+    fn rx_returning_wake_schedules_node() {
+        let mut scheduler = Scheduler::new(200_000);
+        let mut sender = SimpleNode::new(1);
+        sender.queue_tx(make_tx(7, 868_100_000, 50_000));
+        scheduler.add_node(Box::new(sender), Some(0));
+        scheduler.add_node(
+            Box::new(WakeOnReceive {
+                id: NodeId(2),
+                wake_delay_us: 10_000,
+            }),
+            None,
+        );
+        scheduler.run();
         assert_eq!(scheduler.metrics.total_rx, 1);
     }
 

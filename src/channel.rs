@@ -242,6 +242,15 @@ mod tests {
     }
 
     #[test]
+    fn default_creates_empty_channel() {
+        let mut ch = Channel::default();
+        let tx = make_tx(7, 868_100_000, 50_000);
+        ch.begin_transmission(NodeId(1), &tx, 0);
+        ch.resolve_at(50_000);
+        assert_eq!(ch.drain_completed().len(), 1);
+    }
+
+    #[test]
     fn single_transmission_delivers() {
         let mut ch = Channel::new();
         let tx = make_tx(7, 868_100_000, 50_000);
