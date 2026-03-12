@@ -15,10 +15,10 @@ pub type SimTime = u64;
 ///
 /// ```
 /// use theatron::time::sim_time_to_ms;
-/// assert_eq!(sim_time_to_ms(5_000), 5);
+/// assert_eq!(sim_time_to_ms(5_000), 5u64);
 /// ```
-pub fn sim_time_to_ms(t: SimTime) -> u32 {
-    (t / 1_000) as u32
+pub fn sim_time_to_ms(t: SimTime) -> u64 {
+    t / 1_000
 }
 
 /// Convert milliseconds to simulation time (microseconds).
@@ -41,13 +41,19 @@ mod tests {
     #[test]
     fn zero_round_trips() {
         assert_eq!(ms_to_sim_time(0), 0);
-        assert_eq!(sim_time_to_ms(0), 0);
+        assert_eq!(sim_time_to_ms(0), 0u64);
     }
 
     #[test]
     fn one_ms_is_1000_us() {
         assert_eq!(ms_to_sim_time(1), 1_000);
-        assert_eq!(sim_time_to_ms(1_000), 1);
+        assert_eq!(sim_time_to_ms(1_000), 1u64);
+    }
+
+    #[test]
+    fn large_sim_time_no_truncation() {
+        let large_us = (u32::MAX as u64 + 1) * 1_000;
+        assert_eq!(sim_time_to_ms(large_us), u32::MAX as u64 + 1);
     }
 
     proptest! {
@@ -55,11 +61,11 @@ mod tests {
         fn ms_to_sim_and_back_is_approx(ms in 0u32..1_000_000u32) {
             let sim = ms_to_sim_time(ms);
             let back = sim_time_to_ms(sim);
-            prop_assert_eq!(back, ms);
+            prop_assert_eq!(back, ms as u64);
         }
 
         #[test]
-        fn sim_time_monotone(a in 0u64..1_000_000_000u64, b in 0u64..1_000_000_000u64) {
+        fn sim_time_monotone(a in 0u64..u64::MAX / 1_000, b in 0u64..u64::MAX / 1_000) {
             if a <= b {
                 prop_assert!(sim_time_to_ms(a) <= sim_time_to_ms(b));
             }

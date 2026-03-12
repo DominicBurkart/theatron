@@ -134,6 +134,11 @@ impl Scheduler {
     /// assert_eq!(sched.metrics.total_tx, 0);
     /// ```
     pub fn add_node(&mut self, node: Box<dyn NodeHandle>, initial_wake: Option<SimTime>) {
+        debug_assert!(
+            (0..self.interferers.len()).all(|i| node.node_id().0 != u32::MAX - i as u32),
+            "NodeId({}) collides with interferer ID space",
+            node.node_id().0
+        );
         if let Some(wake) = initial_wake {
             let node_id = node.node_id();
             self.schedule(wake, EventKind::Wake { node_id });
@@ -143,6 +148,11 @@ impl Scheduler {
 
     pub fn add_interferer(&mut self, interferer: Box<dyn InterferenceSource>, first_poll: SimTime) {
         let idx = self.interferers.len();
+        let synthetic_id = u32::MAX - idx as u32;
+        debug_assert!(
+            self.nodes.iter().all(|n| n.node_id().0 != synthetic_id),
+            "interferer synthetic NodeId({synthetic_id}) collides with a registered node"
+        );
         self.interferers.push(interferer);
         self.schedule(
             first_poll,
@@ -270,9 +280,6 @@ impl Scheduler {
                     let time = event.time;
                     if let Some(tx) = self.interferers[interferer_idx].poll_inject(time) {
                         let duration = tx.duration_us;
-                        let sf = tx.sf;
-                        let frequency = tx.frequency;
-                        let payload = tx.payload.clone();
                         let interferer_node_id = NodeId(u32::MAX - interferer_idx as u32);
                         let ch_event =
                             self.channel
@@ -288,15 +295,6 @@ impl Scheduler {
                                 sender: interferer_node_id,
                             },
                         );
-                        let frame = RxMetadata {
-                            payload,
-                            rssi: -90.0,
-                            snr: 5.0,
-                            sf,
-                            frequency,
-                            time: complete_time,
-                        };
-                        let _ = frame;
                     }
                     let next = self.interferers[interferer_idx].next_poll_time(time);
                     if let Some(t) = next {
