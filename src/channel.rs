@@ -135,8 +135,6 @@ impl Channel {
 
     /// Return all completed, non-collided transmissions as received frames.
     ///
-    /// The `_node_id` parameter is accepted for API symmetry but does not filter results.
-    ///
     /// # Examples
     ///
     /// ```
@@ -154,11 +152,11 @@ impl Channel {
     /// };
     /// ch.begin_transmission(NodeId(1), &tx, 0);
     /// ch.resolve_at(50_000);
-    /// let received = ch.deliver_to(NodeId(2), 50_000);
+    /// let received = ch.deliver_to(50_000);
     /// assert_eq!(received.len(), 1);
     /// assert_eq!(received[0].payload, vec![0x01]);
     /// ```
-    pub fn deliver_to(&self, _node_id: NodeId, time: SimTime) -> Vec<RxMetadata> {
+    pub fn deliver_to(&self, time: SimTime) -> Vec<RxMetadata> {
         self.completed
             .iter()
             .filter(|tx| tx.end <= time && !tx.collided)
@@ -256,7 +254,7 @@ mod tests {
         let tx = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx, 0);
         ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(NodeId(2), 50_000);
+        let delivered = ch.deliver_to(50_000);
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
     }
@@ -269,7 +267,7 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(3), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(delivered.len(), 0);
     }
 
@@ -281,7 +279,7 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(3), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(delivered.len(), 2);
     }
 
@@ -293,7 +291,7 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(NodeId(3), 60_000);
+        let delivered = ch.deliver_to(60_000);
         assert_eq!(delivered.len(), 2);
     }
 
@@ -307,7 +305,7 @@ mod tests {
         ch.drain_completed();
         ch.begin_transmission(NodeId(2), &tx2, 60_000);
         ch.resolve_at(110_000);
-        let delivered = ch.deliver_to(NodeId(3), 110_000);
+        let delivered = ch.deliver_to(110_000);
         assert_eq!(delivered.len(), 1);
     }
 
