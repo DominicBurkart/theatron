@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::channel::Channel;
+use crate::channel::{Channel, CompletedTx};
 use crate::metrics::MetricsCollector;
 use crate::time::SimTime;
 use crate::traits::InterferenceSource;
@@ -188,19 +188,14 @@ impl Scheduler {
     }
 
     fn deliver_completed_to_nodes(&mut self, time: SimTime) {
-        let completed = self.channel.drain_completed();
-        for (sender, collided, payload, sf, frequency, end_time) in completed {
+        let completed: Vec<CompletedTx> = self.channel.drain_completed();
+        for (sender, collided, captured, frame) in completed {
             if collided {
                 self.metrics.record_collision();
             } else {
-                let frame = RxMetadata {
-                    payload,
-                    rssi: -80.0,
-                    snr: 10.0,
-                    sf,
-                    frequency,
-                    time: end_time,
-                };
+                if captured {
+                    self.metrics.record_capture();
+                }
                 let mut wakes = Vec::new();
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
@@ -443,6 +438,7 @@ mod tests {
             coding_rate: 5,
             frequency,
             duration_us,
+            tx_power_dbm: 14,
         }
     }
 

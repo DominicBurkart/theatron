@@ -4,6 +4,9 @@ use lorawan_device::nb_device::radio::{Event, PhyRxTx, Response, RfConfig, RxQua
 
 use theatron::types::Transmission;
 
+const RX_WINDOW_DURATION_MS: u32 = 1000;
+const RX_WINDOW_OFFSET_MS: i32 = 0;
+
 #[derive(Debug)]
 pub struct SimulatedRadio {
     rx_buf: [u8; 256],
@@ -28,11 +31,21 @@ impl SimulatedRadio {
         self.pending_tx.take()
     }
 
-    pub fn inject_downlink(&mut self, data: Vec<u8>) {
+    pub fn inject_downlink(&mut self, data: Vec<u8>, sf: u8, frequency: u32) -> bool {
+        let Some(rx_config) = &self.current_rx_config else {
+            return false;
+        };
+        if rx_config.bb.sf.factor() as u8 != sf {
+            return false;
+        }
+        if rx_config.frequency != frequency {
+            return false;
+        }
         let len = data.len().min(256);
         self.rx_buf[..len].copy_from_slice(&data[..len]);
         self.rx_len = len;
         self.pending_downlink = Some(data);
+        true
     }
 
     #[allow(dead_code)]
@@ -86,8 +99,8 @@ impl PhyRxTx for SimulatedRadio {
         match event {
             Event::TxRequest(tx_config, buf) => {
                 let TxConfig {
+                    pw,
                     rf: RfConfig { frequency, bb },
-                    ..
                 } = tx_config;
                 let payload = buf.to_vec();
                 let duration_us = compute_duration_us(&bb, payload.len());
@@ -98,6 +111,7 @@ impl PhyRxTx for SimulatedRadio {
                     coding_rate: cr_to_u8(bb.cr),
                     frequency,
                     duration_us,
+                    tx_power_dbm: pw,
                 });
                 Ok(Response::TxDone(0))
             }
@@ -122,11 +136,11 @@ impl PhyRxTx for SimulatedRadio {
 
 impl Timings for SimulatedRadio {
     fn get_rx_window_offset_ms(&self) -> i32 {
-        0
+        RX_WINDOW_OFFSET_MS
     }
 
     fn get_rx_window_duration_ms(&self) -> u32 {
-        100
+        RX_WINDOW_DURATION_MS
     }
 }
 

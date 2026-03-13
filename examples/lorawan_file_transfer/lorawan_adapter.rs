@@ -79,7 +79,9 @@ impl NodeHandle for LoRaWanAdapter {
 
     fn on_receive(&mut self, frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
         let radio = self.device.get_radio();
-        radio.inject_downlink(frame.payload.clone());
+        if !radio.inject_downlink(frame.payload.clone(), frame.sf, frame.frequency) {
+            return None;
+        }
         match self
             .device
             .handle_event(lorawan_device::nb_device::Event::RadioEvent(

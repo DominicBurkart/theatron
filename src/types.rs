@@ -53,6 +53,7 @@ pub struct RxMetadata {
 ///     coding_rate: 5,
 ///     frequency: 868_100_000,
 ///     duration_us: 50_000,
+///     tx_power_dbm: 14,
 /// };
 /// assert_eq!(tx.payload.len(), 2);
 /// assert_eq!(tx.sf, 7);
@@ -65,6 +66,7 @@ pub struct Transmission {
     pub coding_rate: u8,
     pub frequency: u32,
     pub duration_us: u64,
+    pub tx_power_dbm: i8,
 }
 
 /// Events emitted by the channel during a simulation.
@@ -139,6 +141,7 @@ mod tests {
             coding_rate: 5,
             frequency: 868_100_000,
             duration_us: 50_000,
+            tx_power_dbm: 14,
         };
         let mut cloned = tx.clone();
         cloned.payload.push(0x02);

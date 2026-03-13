@@ -3,7 +3,13 @@ use theatron::time::{SimTime, ms_to_sim_time};
 use theatron::traits::InterferenceSource;
 use theatron::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 
-fn make_tx(sf: u8, frequency: u32, duration_us: u64, payload: Vec<u8>) -> Transmission {
+fn make_tx_power(
+    sf: u8,
+    frequency: u32,
+    duration_us: u64,
+    payload: Vec<u8>,
+    tx_power_dbm: i8,
+) -> Transmission {
     Transmission {
         payload,
         sf,
@@ -11,6 +17,7 @@ fn make_tx(sf: u8, frequency: u32, duration_us: u64, payload: Vec<u8>) -> Transm
         coding_rate: 5,
         frequency,
         duration_us,
+        tx_power_dbm,
     }
 }
 
@@ -23,6 +30,7 @@ struct SequentialSender {
     sf: u8,
     frequency: u32,
     tx_duration_us: u64,
+    tx_power_dbm: i8,
 }
 
 impl SequentialSender {
@@ -34,6 +42,18 @@ impl SequentialSender {
         frequency: u32,
         tx_duration_us: u64,
     ) -> Self {
+        Self::with_power(id, total, gap_us, sf, frequency, tx_duration_us, 14)
+    }
+
+    fn with_power(
+        id: u32,
+        total: usize,
+        gap_us: u64,
+        sf: u8,
+        frequency: u32,
+        tx_duration_us: u64,
+        tx_power_dbm: i8,
+    ) -> Self {
         Self {
             id: NodeId(id),
             total,
@@ -43,6 +63,7 @@ impl SequentialSender {
             sf,
             frequency,
             tx_duration_us,
+            tx_power_dbm,
         }
     }
 }
@@ -64,11 +85,12 @@ impl NodeHandle for SequentialSender {
         if self.sent >= self.total {
             return None;
         }
-        self.pending = Some(make_tx(
+        self.pending = Some(make_tx_power(
             self.sf,
             self.frequency,
             self.tx_duration_us,
             vec![self.sent as u8],
+            self.tx_power_dbm,
         ));
         self.sent += 1;
         Some(time + self.tx_duration_us + self.gap_us)
@@ -113,17 +135,19 @@ struct BurstInterferer {
     duration_us: u64,
     sf: u8,
     frequency: u32,
+    tx_power_dbm: i8,
 }
 
 impl InterferenceSource for BurstInterferer {
     fn observe(&mut self, _event: &ChannelEvent, _time: SimTime) {}
 
     fn poll_inject(&mut self, _time: SimTime) -> Option<Transmission> {
-        Some(make_tx(
+        Some(make_tx_power(
             self.sf,
             self.frequency,
             self.duration_us,
             vec![0xFF],
+            self.tx_power_dbm,
         ))
     }
 
@@ -186,6 +210,7 @@ fn interference_causes_collisions() {
             duration_us: 80_000,
             sf: SF,
             frequency: FREQ,
+            tx_power_dbm: 14,
         }),
         25_000,
     );
@@ -220,6 +245,7 @@ fn deterministic_same_scenario_same_result() {
                 duration_us: 60_000,
                 sf: SF,
                 frequency: FREQ,
+                tx_power_dbm: 14,
             }),
             100_000,
         );
@@ -258,6 +284,7 @@ fn pdr_greater_than_zero_under_interference() {
             duration_us: 60_000,
             sf: SF,
             frequency: FREQ,
+            tx_power_dbm: 14,
         }),
         100_000,
     );
@@ -269,5 +296,94 @@ fn pdr_greater_than_zero_under_interference() {
     assert!(
         rx > 0,
         "some packets must be delivered even under interference"
+    );
+}
+
+const SENDER_PERIOD_US: u64 = TX_DURATION_US + GAP_US;
+
+fn sender_frames_at_receiver(m: &theatron::metrics::MetricsCollector) -> u64 {
+    m.node_rx_count(NodeId(2))
+        .saturating_sub(m.node_rx_count(NodeId(1)))
+}
+
+#[test]
+fn strong_sender_survives_weak_interferer_via_capture() {
+    let end = ms_to_sim_time(2_400);
+    let mut scheduler = Scheduler::new(end);
+
+    scheduler.add_node(
+        Box::new(SequentialSender::with_power(
+            1,
+            10,
+            GAP_US,
+            SF,
+            FREQ,
+            TX_DURATION_US,
+            20,
+        )),
+        Some(0),
+    );
+    scheduler.add_node(Box::new(SilentReceiver::new(2)), None);
+
+    scheduler.add_interferer(
+        Box::new(BurstInterferer {
+            period_us: SENDER_PERIOD_US,
+            duration_us: TX_DURATION_US,
+            sf: SF,
+            frequency: FREQ,
+            tx_power_dbm: 14,
+        }),
+        0,
+    );
+    scheduler.run();
+
+    assert_eq!(
+        scheduler.metrics.total_tx, scheduler.metrics.total_rx,
+        "all interferer TXs should be collided (captured by sender), so total_rx == total_tx"
+    );
+    assert!(
+        scheduler.metrics.total_captures > 0,
+        "capture events must be recorded"
+    );
+}
+
+#[test]
+fn strong_interferer_causes_more_collisions_than_weak() {
+    let run_with_interferer_power = |power: i8| -> u64 {
+        let end = ms_to_sim_time(4_900);
+        let mut scheduler = Scheduler::new(end);
+        scheduler.add_node(
+            Box::new(SequentialSender::with_power(
+                1,
+                20,
+                GAP_US,
+                SF,
+                FREQ,
+                TX_DURATION_US,
+                14,
+            )),
+            Some(0),
+        );
+        scheduler.add_node(Box::new(SilentReceiver::new(2)), None);
+        scheduler.add_interferer(
+            Box::new(BurstInterferer {
+                period_us: SENDER_PERIOD_US,
+                duration_us: TX_DURATION_US,
+                sf: SF,
+                frequency: FREQ,
+                tx_power_dbm: power,
+            }),
+            0,
+        );
+        scheduler.run();
+        sender_frames_at_receiver(&scheduler.metrics)
+    };
+
+    let delivered_with_weak = run_with_interferer_power(8);
+    let delivered_with_strong = run_with_interferer_power(20);
+
+    assert!(
+        delivered_with_weak > delivered_with_strong,
+        "weak interferer (capture effect) should allow more sender deliveries: weak={delivered_with_weak} strong={delivered_with_strong}"
     );
 }

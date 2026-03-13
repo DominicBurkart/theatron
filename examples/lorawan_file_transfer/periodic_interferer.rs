@@ -7,6 +7,7 @@ pub struct PeriodicInterferer {
     sf: u8,
     frequency: u32,
     duration_us: u64,
+    tx_power_dbm: i8,
 }
 
 impl PeriodicInterferer {
@@ -16,6 +17,7 @@ impl PeriodicInterferer {
             sf,
             frequency,
             duration_us,
+            tx_power_dbm: 14,
         }
     }
 }
@@ -31,6 +33,7 @@ impl InterferenceSource for PeriodicInterferer {
             coding_rate: 5,
             frequency: self.frequency,
             duration_us: self.duration_us,
+            tx_power_dbm: self.tx_power_dbm,
         })
     }
 
