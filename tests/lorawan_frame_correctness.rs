@@ -1,6 +1,6 @@
+use lorawan::default_crypto::DefaultFactory;
 use lorawan::keys::AES128;
 use lorawan::parser::{DataHeader, DataPayload, MHDRAble, MType, PhyPayload};
-use lorawan_device::default_crypto::DefaultFactory;
 use lorawan_device::nb_device::radio::{Event, PhyRxTx, Response, RfConfig, RxQuality, TxConfig};
 use lorawan_device::nb_device::{Device, Event as DevEvent};
 use lorawan_device::{AppSKey, DevAddr, JoinMode, NewSKey, Timings};
@@ -86,7 +86,7 @@ impl PhyRxTx for MinimalRadio {
         match event {
             Event::TxRequest(tx_config, buf) => {
                 let TxConfig {
-                    rf: RfConfig { frequency, bb },
+                    rf: RfConfig { frequency, bb, .. },
                     ..
                 } = tx_config;
                 let payload = buf.to_vec();
@@ -129,7 +129,7 @@ const DEV_ID: u32 = 42;
 const NWK_SKEY_BYTES: [u8; 16] = [DEV_ID as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
 const APP_SKEY_BYTES: [u8; 16] = [DEV_ID as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
-fn make_device() -> Device<MinimalRadio, DefaultFactory, Xorshift64, 255> {
+fn make_device() -> Device<MinimalRadio, Xorshift64, 255> {
     let radio = MinimalRadio::new();
     let rng = Xorshift64::new(0xDEAD_BEEF);
     let region = lorawan_device::region::Configuration::new(lorawan_device::Region::EU868);
@@ -137,14 +137,14 @@ fn make_device() -> Device<MinimalRadio, DefaultFactory, Xorshift64, 255> {
     let credentials = JoinMode::ABP {
         devaddr: DevAddr::from(DEV_ID),
         appskey: AppSKey::from(APP_SKEY_BYTES),
-        newskey: NewSKey::from(NWK_SKEY_BYTES),
+        nwkskey: NewSKey::from(NWK_SKEY_BYTES),
     };
     device.join(credentials).expect("ABP join must succeed");
     device.set_datarate(lorawan_device::region::DR::_5);
     device
 }
 
-fn drain_rx_windows(device: &mut Device<MinimalRadio, DefaultFactory, Xorshift64, 255>) {
+fn drain_rx_windows(device: &mut Device<MinimalRadio, Xorshift64, 255>) {
     for _ in 0..10 {
         if device.ready_to_send_data() {
             break;
@@ -154,7 +154,7 @@ fn drain_rx_windows(device: &mut Device<MinimalRadio, DefaultFactory, Xorshift64
 }
 
 fn send_and_get_payload(
-    device: &mut Device<MinimalRadio, DefaultFactory, Xorshift64, 255>,
+    device: &mut Device<MinimalRadio, Xorshift64, 255>,
     data: &[u8],
 ) -> Vec<u8> {
     drain_rx_windows(device);
@@ -192,7 +192,7 @@ fn uplink_mic_validates() {
         let nwk_skey = AES128(NWK_SKEY_BYTES);
         let fcnt = phy.fhdr().fcnt() as u32;
         assert!(
-            phy.validate_mic(&nwk_skey, fcnt),
+            phy.validate_mic(&nwk_skey, fcnt, &DefaultFactory),
             "MIC must validate with known NwkSKey"
         );
     } else {

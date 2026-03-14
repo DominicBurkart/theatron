@@ -22,9 +22,9 @@ path = "examples/lorawan_file_transfer/main.rs"
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
-lorawan-device = { version = "0.12", features = ["default-crypto"] }
-lorawan = { version = "0.9", default-features = false, features = ["default-crypto"] }
-lora-modulation = "0.1"
+lorawan-device = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7774bd98874f1e5abfa9ac62eface81" }
+lorawan = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7774bd98874f1e5abfa9ac62eface81", package = "lorawan" }
+lora-modulation = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7774bd98874f1e5abfa9ac62eface81" }
 proptest = "1"
 rand_core = { version = "0.6", default-features = false }
 

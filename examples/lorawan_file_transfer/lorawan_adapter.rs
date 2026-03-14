@@ -1,4 +1,3 @@
-use lorawan_device::default_crypto::DefaultFactory;
 use lorawan_device::nb_device::radio::Event as RadioEvent;
 use lorawan_device::nb_device::{Device, Response};
 use lorawan_device::{AppSKey, DevAddr, JoinMode, NewSKey};
@@ -16,7 +15,7 @@ const BUF_SIZE: usize = 255;
 
 pub struct LoRaWanAdapter {
     id: NodeId,
-    device: Device<SimulatedRadio, DefaultFactory, Xorshift64, BUF_SIZE>,
+    device: Device<SimulatedRadio, Xorshift64, BUF_SIZE>,
     fragmenter: FileFragmenter,
     pending_timeout_ms: Option<u32>,
     tx_start_time: SimTime,
@@ -33,7 +32,7 @@ impl LoRaWanAdapter {
         let credentials = JoinMode::ABP {
             devaddr: DevAddr::from(id.0),
             appskey: AppSKey::from([id.0 as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
-            newskey: NewSKey::from([id.0 as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
+            nwkskey: NewSKey::from([id.0 as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
         };
         device.join(credentials).expect("ABP join must succeed");
         device.set_datarate(lorawan_device::region::DR::_5);
