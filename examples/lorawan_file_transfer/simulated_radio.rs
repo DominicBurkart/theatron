@@ -100,7 +100,7 @@ impl PhyRxTx for SimulatedRadio {
             Event::TxRequest(tx_config, buf) => {
                 let TxConfig {
                     pw,
-                    rf: RfConfig { frequency, bb },
+                    rf: RfConfig { frequency, bb, .. },
                 } = tx_config;
                 let payload = buf.to_vec();
                 let duration_us = compute_duration_us(&bb, payload.len());
@@ -156,6 +156,7 @@ mod tests {
         RfConfig {
             frequency: 868_100_000,
             bb: make_bb(),
+            max_payload_len: 255,
         }
     }
 
