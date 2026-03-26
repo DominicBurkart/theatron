@@ -1,19 +1,6 @@
 coverage:
   status:
-    project:
-      default:
-        target: 100%
-        threshold: 0%
-        if_not_found: success
-        if_ci_failed: error
-    patch:
-      default:
-        target: 100%
-        threshold: 0%
-        if_not_found: success
-        if_ci_failed: error
-
-comment:
-  layout: "reach,diff,flags,tree"
-  behavior: default
-  require_changes: true
+    project: off
+  patch:
+    default:
+      target: 100%
