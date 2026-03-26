@@ -261,7 +261,7 @@ impl Scheduler {
                         self.handle_poll_transmit(idx, event.time);
                     }
                 }
-                EventKind::TxComplete { sender } => {
+                EventKind::TxComplete { sender: _ } => {
                     let completed_events = self.channel.resolve_at(event.time);
                     for ch_event in &completed_events {
                         for interferer in &mut self.interferers {
@@ -269,7 +269,6 @@ impl Scheduler {
                         }
                     }
                     self.deliver_completed_to_nodes(event.time);
-                    let _ = sender;
                 }
                 EventKind::InterferencePoll { interferer_idx } => {
                     let time = event.time;
