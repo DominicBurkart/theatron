@@ -561,6 +561,17 @@ mod tests {
     }
 
     #[test]
+    fn add_node_after_interferer_validates_id_space() {
+        let mut sched = Scheduler::new(200_000);
+        sched.add_interferer(Box::new(NoOpInterferer), 0);
+        // Adding a node after an interferer exercises the debug_assert!
+        // closure that checks for NodeId/interferer ID space collisions.
+        sched.add_node(Box::new(SimpleNode::new(1)), Some(0));
+        sched.run();
+        assert_eq!(sched.metrics.total_tx, 0);
+    }
+
+    #[test]
     fn two_nodes_overlapping_tx_records_collision() {
         let mut sched = Scheduler::new(200_000);
         let mut n1 = SimpleNode::new(1);
