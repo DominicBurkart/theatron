@@ -1,0 +1,232 @@
+use theatron::scheduler::NodeHandle;
+use theatron::time::SimTime;
+use theatron::traits::TrafficModel;
+use theatron::types::{NodeId, RxMetadata, Transmission};
+
+/// Pure ALOHA node: transmits immediately when a payload is available.
+///
+/// If the node has no pending data, it re-checks after `poll_interval_us`.
+/// There is no carrier sensing or time slotting — this is the simplest
+/// possible MAC protocol and serves as a baseline for comparison.
+pub struct AlohaNode {
+    id: NodeId,
+    traffic: Box<dyn TrafficModel>,
+    pending_tx: Option<Transmission>,
+    poll_interval_us: u64,
+    sf: u8,
+    frequency: u32,
+    bandwidth: u32,
+    coding_rate: u8,
+    tx_power_dbm: i8,
+    tx_duration_us: u64,
+    received: Vec<RxMetadata>,
+}
+
+impl AlohaNode {
+    pub fn new(
+        id: NodeId,
+        traffic: Box<dyn TrafficModel>,
+        poll_interval_us: u64,
+        sf: u8,
+        frequency: u32,
+        tx_duration_us: u64,
+    ) -> Self {
+        Self {
+            id,
+            traffic,
+            pending_tx: None,
+            poll_interval_us,
+            sf,
+            frequency,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            tx_power_dbm: 14,
+            tx_duration_us,
+            received: Vec::new(),
+        }
+    }
+
+    fn try_generate_tx(&mut self, time: SimTime) -> Option<SimTime> {
+        if self.pending_tx.is_some() {
+            return Some(time);
+        }
+        if let Some(payload) = self.traffic.next_payload(time) {
+            self.pending_tx = Some(Transmission {
+                payload,
+                sf: self.sf,
+                bandwidth: self.bandwidth,
+                coding_rate: self.coding_rate,
+                frequency: self.frequency,
+                duration_us: self.tx_duration_us,
+                tx_power_dbm: self.tx_power_dbm,
+            });
+            Some(time)
+        } else {
+            Some(time + self.poll_interval_us)
+        }
+    }
+}
+
+impl NodeHandle for AlohaNode {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+
+    fn on_receive(&mut self, frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
+        self.received.push(frame);
+        None
+    }
+
+    fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
+        self.pending_tx.take()
+    }
+
+    fn update(&mut self, time: SimTime) -> Option<SimTime> {
+        self.try_generate_tx(time)
+    }
+}
+
+/// A simple receiver that collects all incoming frames.
+pub struct AlohaReceiver {
+    id: NodeId,
+    pub received: Vec<RxMetadata>,
+}
+
+impl AlohaReceiver {
+    pub fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            received: Vec::new(),
+        }
+    }
+}
+
+impl NodeHandle for AlohaReceiver {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+
+    fn on_receive(&mut self, frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
+        self.received.push(frame);
+        None
+    }
+
+    fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
+        None
+    }
+
+    fn update(&mut self, _time: SimTime) -> Option<SimTime> {
+        None
+    }
+}
+
+/// A traffic model that produces `count` payloads at regular intervals.
+pub struct PeriodicTraffic {
+    payload: Vec<u8>,
+    interval_us: u64,
+    next_time: u64,
+    remaining: usize,
+}
+
+impl PeriodicTraffic {
+    pub fn new(payload: Vec<u8>, interval_us: u64, count: usize) -> Self {
+        Self {
+            payload,
+            interval_us,
+            next_time: 0,
+            remaining: count,
+        }
+    }
+}
+
+impl TrafficModel for PeriodicTraffic {
+    fn next_payload(&mut self, time: SimTime) -> Option<Vec<u8>> {
+        if self.remaining == 0 {
+            return None;
+        }
+        if time >= self.next_time {
+            self.remaining -= 1;
+            self.next_time = time + self.interval_us;
+            Some(self.payload.clone())
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn periodic_traffic_produces_exact_count() {
+        let mut traffic = PeriodicTraffic::new(vec![0x42], 1_000_000, 3);
+        assert!(traffic.next_payload(0).is_some());
+        assert!(traffic.next_payload(1_000_000).is_some());
+        assert!(traffic.next_payload(2_000_000).is_some());
+        assert!(traffic.next_payload(3_000_000).is_none());
+    }
+
+    #[test]
+    fn periodic_traffic_respects_interval() {
+        let mut traffic = PeriodicTraffic::new(vec![0x42], 1_000_000, 2);
+        assert!(traffic.next_payload(0).is_some());
+        // Too early for next payload
+        assert!(traffic.next_payload(500_000).is_none());
+        assert!(traffic.next_payload(1_000_000).is_some());
+    }
+
+    #[test]
+    fn aloha_node_transmits_when_payload_available() {
+        let traffic = PeriodicTraffic::new(vec![0xAB], 1_000_000, 1);
+        let mut node = AlohaNode::new(
+            NodeId(1),
+            Box::new(traffic),
+            1_000_000,
+            7,
+            868_100_000,
+            50_000,
+        );
+        let wake = node.update(0);
+        assert!(wake.is_some());
+        let tx = node.poll_transmit(0);
+        assert!(tx.is_some());
+        let tx = tx.unwrap();
+        assert_eq!(tx.payload, vec![0xAB]);
+        assert_eq!(tx.sf, 7);
+    }
+
+    #[test]
+    fn aloha_receiver_collects_frames() {
+        let mut receiver = AlohaReceiver::new(NodeId(99));
+        let frame = RxMetadata {
+            payload: vec![0x01],
+            rssi: -80.0,
+            snr: 10.0,
+            sf: 7,
+            frequency: 868_100_000,
+            time: 1000,
+        };
+        receiver.on_receive(frame, 1000);
+        assert_eq!(receiver.received.len(), 1);
+    }
+
+    #[test]
+    fn aloha_node_no_payload_schedules_next_poll() {
+        let traffic = PeriodicTraffic::new(vec![0xAB], 5_000_000, 1);
+        let mut node = AlohaNode::new(
+            NodeId(1),
+            Box::new(traffic),
+            1_000_000,
+            7,
+            868_100_000,
+            50_000,
+        );
+        // Consume the one payload
+        node.update(0);
+        node.poll_transmit(0);
+        // Now traffic is exhausted; update should schedule next poll
+        let wake = node.update(1_000_000);
+        assert_eq!(wake, Some(2_000_000));
+    }
+}

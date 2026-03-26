@@ -1,0 +1,219 @@
+use theatron::scheduler::{NodeHandle, Scheduler};
+use theatron::time::SimTime;
+use theatron::types::{NodeId, RxMetadata, Transmission};
+
+// --- Test helpers ---
+
+fn make_tx(payload: Vec<u8>, sf: u8, frequency: u32, duration_us: u64) -> Transmission {
+    Transmission {
+        payload,
+        sf,
+        bandwidth: 125_000,
+        coding_rate: 5,
+        frequency,
+        duration_us,
+        tx_power_dbm: 14,
+    }
+}
+
+/// A node that transmits a fixed number of packets at regular intervals.
+struct PeriodicSender {
+    id: NodeId,
+    interval_us: u64,
+    duration_us: u64,
+    remaining: usize,
+    sf: u8,
+    frequency: u32,
+    pending: Option<Transmission>,
+}
+
+impl PeriodicSender {
+    fn new(
+        id: u32,
+        interval_us: u64,
+        duration_us: u64,
+        count: usize,
+        sf: u8,
+        frequency: u32,
+    ) -> Self {
+        Self {
+            id: NodeId(id),
+            interval_us,
+            duration_us,
+            remaining: count,
+            sf,
+            frequency,
+            pending: None,
+        }
+    }
+}
+
+impl NodeHandle for PeriodicSender {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+
+    fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
+        None
+    }
+
+    fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
+        self.pending.take()
+    }
+
+    fn update(&mut self, time: SimTime) -> Option<SimTime> {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+            self.pending = Some(make_tx(
+                vec![self.id.0 as u8; 10],
+                self.sf,
+                self.frequency,
+                self.duration_us,
+            ));
+            Some(time + self.interval_us)
+        } else {
+            None
+        }
+    }
+}
+
+/// A passive receiver that counts received frames.
+struct Receiver {
+    id: NodeId,
+    count: usize,
+}
+
+impl Receiver {
+    fn new(id: u32) -> Self {
+        Self {
+            id: NodeId(id),
+            count: 0,
+        }
+    }
+}
+
+impl NodeHandle for Receiver {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+
+    fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
+        self.count += 1;
+        None
+    }
+
+    fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
+        None
+    }
+
+    fn update(&mut self, _time: SimTime) -> Option<SimTime> {
+        None
+    }
+}
+
+// --- Tests ---
+
+/// A single ALOHA sender with no contention should deliver all packets.
+#[test]
+fn single_sender_all_delivered() {
+    let mut sched = Scheduler::new(20_000_000);
+    let sender = PeriodicSender::new(1, 1_000_000, 50_000, 5, 7, 868_100_000);
+    let receiver = Receiver::new(99);
+    sched.add_node(Box::new(sender), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+    assert_eq!(sched.metrics.total_tx, 5);
+    // Each TX delivered to 1 receiver
+    assert_eq!(sched.metrics.total_rx, 5);
+    assert_eq!(sched.metrics.total_collisions, 0);
+}
+
+/// Two senders transmitting simultaneously on the same SF/frequency should collide.
+#[test]
+fn two_simultaneous_senders_collide() {
+    let mut sched = Scheduler::new(1_000_000);
+    // Both transmit at t=0 with 200ms duration on same SF/freq
+    let sender1 = PeriodicSender::new(1, 500_000, 200_000, 1, 7, 868_100_000);
+    let sender2 = PeriodicSender::new(2, 500_000, 200_000, 1, 7, 868_100_000);
+    let receiver = Receiver::new(99);
+    sched.add_node(Box::new(sender1), Some(0));
+    sched.add_node(Box::new(sender2), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+    assert_eq!(sched.metrics.total_tx, 2);
+    assert!(
+        sched.metrics.total_collisions >= 1,
+        "simultaneous same-SF/freq transmissions should collide"
+    );
+}
+
+/// Senders on different frequencies should not collide.
+#[test]
+fn different_frequencies_no_collision() {
+    let mut sched = Scheduler::new(1_000_000);
+    let sender1 = PeriodicSender::new(1, 500_000, 200_000, 1, 7, 868_100_000);
+    let sender2 = PeriodicSender::new(2, 500_000, 200_000, 1, 7, 868_300_000);
+    let receiver = Receiver::new(99);
+    sched.add_node(Box::new(sender1), Some(0));
+    sched.add_node(Box::new(sender2), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+    assert_eq!(sched.metrics.total_tx, 2);
+    // Each TX delivered to 2 non-sender nodes (the other sender + receiver)
+    assert_eq!(sched.metrics.total_rx, 4);
+    assert_eq!(sched.metrics.total_collisions, 0);
+}
+
+/// Senders on different SFs should not collide (SF orthogonality).
+#[test]
+fn different_sf_no_collision() {
+    let mut sched = Scheduler::new(1_000_000);
+    let sender1 = PeriodicSender::new(1, 500_000, 200_000, 1, 7, 868_100_000);
+    let sender2 = PeriodicSender::new(2, 500_000, 200_000, 1, 12, 868_100_000);
+    let receiver = Receiver::new(99);
+    sched.add_node(Box::new(sender1), Some(0));
+    sched.add_node(Box::new(sender2), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+    assert_eq!(sched.metrics.total_tx, 2);
+    // Each TX delivered to 2 non-sender nodes
+    assert_eq!(sched.metrics.total_rx, 4);
+    assert_eq!(sched.metrics.total_collisions, 0);
+}
+
+/// Non-overlapping transmissions on the same channel should all succeed.
+#[test]
+fn sequential_transmissions_no_collision() {
+    let mut sched = Scheduler::new(20_000_000);
+    // Sender 1 transmits at t=0, sender 2 at t=1s — no overlap with 200ms duration
+    let sender1 = PeriodicSender::new(1, 2_000_000, 200_000, 3, 7, 868_100_000);
+    let sender2 = PeriodicSender::new(2, 2_000_000, 200_000, 3, 7, 868_100_000);
+    let receiver = Receiver::new(99);
+    sched.add_node(Box::new(sender1), Some(0));
+    sched.add_node(Box::new(sender2), Some(1_000_000));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+    assert_eq!(sched.metrics.total_tx, 6);
+    assert_eq!(sched.metrics.total_collisions, 0);
+}
+
+/// Multiple senders all transmitting at the same time should cause collisions,
+/// demonstrating the classic ALOHA throughput problem.
+#[test]
+fn five_simultaneous_senders_high_collision_rate() {
+    let mut sched = Scheduler::new(1_000_000);
+    for i in 1..=5u32 {
+        let sender = PeriodicSender::new(i, 500_000, 200_000, 1, 7, 868_100_000);
+        sched.add_node(Box::new(sender), Some(0));
+    }
+    let receiver = Receiver::new(99);
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+    assert_eq!(sched.metrics.total_tx, 5);
+    assert!(
+        sched.metrics.total_collisions >= 1,
+        "5 simultaneous senders must produce collisions"
+    );
+    // With 5 equal-power simultaneous TXs, all collide → zero deliveries
+    assert_eq!(sched.metrics.total_rx, 0);
+}
