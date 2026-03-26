@@ -318,6 +318,7 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::types::{ChannelEvent, Transmission};
+    use proptest::prelude::*;
 
     struct SimpleNode {
         id: NodeId,
@@ -430,6 +431,59 @@ mod tests {
         }
     }
 
+    struct ActiveInterferer {
+        tx: Transmission,
+        poll_interval: u64,
+        remaining: usize,
+    }
+
+    impl InterferenceSource for ActiveInterferer {
+        fn observe(&mut self, _event: &ChannelEvent, _time: SimTime) {}
+        fn poll_inject(&mut self, _time: SimTime) -> Option<Transmission> {
+            if self.remaining > 0 {
+                self.remaining -= 1;
+                Some(self.tx.clone())
+            } else {
+                None
+            }
+        }
+        fn next_poll_time(&self, current_time: SimTime) -> Option<SimTime> {
+            if self.remaining > 0 {
+                Some(current_time + self.poll_interval)
+            } else {
+                None
+            }
+        }
+    }
+
+    struct ReplyNode {
+        id: NodeId,
+        reply_tx: Option<Transmission>,
+        received: bool,
+    }
+
+    impl NodeHandle for ReplyNode {
+        fn node_id(&self) -> NodeId {
+            self.id
+        }
+        fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> {
+            if !self.received {
+                self.received = true;
+            }
+            None
+        }
+        fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
+            if self.received {
+                self.reply_tx.take()
+            } else {
+                None
+            }
+        }
+        fn update(&mut self, _t: SimTime) -> Option<SimTime> {
+            None
+        }
+    }
+
     fn make_tx(sf: u8, frequency: u32, duration_us: u64) -> Transmission {
         Transmission {
             payload: vec![0xAB],
@@ -505,5 +559,165 @@ mod tests {
         scheduler.run();
         assert_eq!(scheduler.current_time(), 0);
         assert_eq!(scheduler.metrics.total_tx, 0);
+    }
+
+    #[test]
+    fn two_nodes_overlapping_tx_records_collision() {
+        let mut sched = Scheduler::new(200_000);
+        let mut n1 = SimpleNode::new(1);
+        n1.queue_tx(make_tx(7, 868_100_000, 50_000));
+        let mut n2 = SimpleNode::new(2);
+        n2.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched.add_node(Box::new(n1), Some(0));
+        sched.add_node(Box::new(n2), Some(10_000));
+        sched.run();
+
+        assert_eq!(sched.metrics.total_tx, 2);
+        assert!(
+            sched.metrics.total_collisions > 0,
+            "overlapping same-SF/freq TXs must collide"
+        );
+        assert_eq!(sched.metrics.total_rx, 0);
+    }
+
+    #[test]
+    fn active_interferer_injects_and_records_airtime() {
+        let mut sched = Scheduler::new(300_000);
+        let interferer = ActiveInterferer {
+            tx: make_tx(7, 868_100_000, 30_000),
+            poll_interval: 100_000,
+            remaining: 2,
+        };
+        sched.add_interferer(Box::new(interferer), 0);
+        sched.run();
+
+        assert_eq!(sched.metrics.total_airtime_us, 60_000);
+        assert_eq!(
+            sched.metrics.total_tx, 0,
+            "interferer TXs do not count as node TXs"
+        );
+    }
+
+    #[test]
+    fn single_tx_airtime_is_recorded() {
+        let mut sched = Scheduler::new(200_000);
+        let mut node = SimpleNode::new(1);
+        node.queue_tx(make_tx(7, 868_100_000, 75_000));
+        sched.add_node(Box::new(node), Some(0));
+        sched.run();
+
+        assert_eq!(sched.metrics.total_airtime_us, 75_000);
+    }
+
+    #[test]
+    fn receive_triggers_reply_tx() {
+        let mut sched = Scheduler::new(200_000);
+        let mut sender = SimpleNode::new(1);
+        sender.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched.add_node(Box::new(sender), Some(0));
+
+        let reply_node = ReplyNode {
+            id: NodeId(2),
+            reply_tx: Some(make_tx(7, 868_100_000, 30_000)),
+            received: false,
+        };
+        sched.add_node(Box::new(reply_node), None);
+        sched.run();
+
+        assert_eq!(sched.metrics.total_tx, 2, "original + reply");
+        assert_eq!(sched.metrics.total_airtime_us, 80_000);
+        assert_eq!(
+            sched.metrics.total_rx, 2,
+            "each node receives the other's TX"
+        );
+    }
+
+    #[test]
+    fn broadcast_to_three_receivers() {
+        let mut sched = Scheduler::new(200_000);
+        let mut sender = SimpleNode::new(1);
+        sender.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched.add_node(Box::new(sender), Some(0));
+        sched.add_node(Box::new(SimpleNode::new(2)), None);
+        sched.add_node(Box::new(SimpleNode::new(3)), None);
+        sched.add_node(Box::new(SimpleNode::new(4)), None);
+        sched.run();
+
+        assert_eq!(sched.metrics.total_tx, 1);
+        assert_eq!(sched.metrics.total_rx, 3);
+        assert_eq!(sched.metrics.node_rx_count(NodeId(2)), 1);
+        assert_eq!(sched.metrics.node_rx_count(NodeId(3)), 1);
+        assert_eq!(sched.metrics.node_rx_count(NodeId(4)), 1);
+        assert_eq!(sched.metrics.node_rx_count(NodeId(1)), 0);
+    }
+
+    #[test]
+    fn capture_effect_through_scheduler() {
+        let mut sched = Scheduler::new(200_000);
+        let mut strong = SimpleNode::new(1);
+        strong.queue_tx(Transmission {
+            payload: vec![0xAB],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 20,
+        });
+        let mut weak = SimpleNode::new(2);
+        weak.queue_tx(Transmission {
+            payload: vec![0xCD],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 14,
+        });
+        sched.add_node(Box::new(strong), Some(0));
+        sched.add_node(Box::new(weak), Some(10_000));
+        sched.add_node(Box::new(SimpleNode::new(3)), None);
+        sched.run();
+
+        assert_eq!(sched.metrics.total_tx, 2);
+        assert_eq!(sched.metrics.total_captures, 1);
+        assert_eq!(sched.metrics.total_collisions, 1);
+        assert!(sched.metrics.total_rx > 0, "strong TX must be delivered");
+    }
+
+    #[test]
+    fn interferer_collides_with_node_tx() {
+        let mut sched = Scheduler::new(200_000);
+        let mut node = SimpleNode::new(1);
+        node.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched.add_node(Box::new(node), Some(0));
+        sched.add_node(Box::new(SimpleNode::new(2)), None);
+
+        let interferer = ActiveInterferer {
+            tx: make_tx(7, 868_100_000, 50_000),
+            poll_interval: 0,
+            remaining: 1,
+        };
+        sched.add_interferer(Box::new(interferer), 10_000);
+        sched.run();
+
+        assert!(sched.metrics.total_collisions > 0);
+        assert_eq!(sched.metrics.total_rx, 0, "collision prevents delivery");
+    }
+
+    proptest! {
+        #[test]
+        fn n_receivers_all_get_broadcast(n in 2usize..20) {
+            let mut sched = Scheduler::new(200_000);
+            let mut sender = SimpleNode::new(0);
+            sender.queue_tx(make_tx(7, 868_100_000, 50_000));
+            sched.add_node(Box::new(sender), Some(0));
+            for i in 1..=n {
+                sched.add_node(Box::new(SimpleNode::new(i as u32)), None);
+            }
+            sched.run();
+            prop_assert_eq!(sched.metrics.total_tx, 1u64);
+            prop_assert_eq!(sched.metrics.total_rx, n as u64);
+        }
     }
 }
