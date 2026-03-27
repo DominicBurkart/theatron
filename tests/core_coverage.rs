@@ -31,13 +31,14 @@ fn default_tx() -> Transmission {
     make_tx(7, 868_100_000, 50_000, 14)
 }
 
-/// A node that transmits once per wake, scheduling the next wake after a
-/// configurable interval. Tracks how many times it was woken.
+/// A node that transmits once per wake (not on receive-triggered polls).
+/// Tracks how many times it was woken.
 struct CountingNode {
     id: NodeId,
     interval_us: u64,
     wake_count: u32,
-    tx: Option<Transmission>,
+    tx_template: Option<Transmission>,
+    ready_to_tx: bool,
     received: Vec<RxMetadata>,
 }
 
@@ -47,7 +48,8 @@ impl CountingNode {
             id: NodeId(id),
             interval_us,
             wake_count: 0,
-            tx,
+            tx_template: tx,
+            ready_to_tx: false,
             received: Vec::new(),
         }
     }
@@ -62,10 +64,16 @@ impl NodeHandle for CountingNode {
         None
     }
     fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
-        self.tx.clone()
+        if self.ready_to_tx {
+            self.ready_to_tx = false;
+            self.tx_template.clone()
+        } else {
+            None
+        }
     }
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
         self.wake_count += 1;
+        self.ready_to_tx = true;
         Some(time + self.interval_us)
     }
 }
@@ -90,6 +98,43 @@ impl NodeHandle for InertNode {
     }
 }
 
+/// A node that transmits exactly once on its first wake.
+struct OneShotNode {
+    id: NodeId,
+    tx: Option<Transmission>,
+    fired: bool,
+}
+
+impl OneShotNode {
+    fn new(id: u32, tx: Transmission) -> Self {
+        Self {
+            id: NodeId(id),
+            tx: Some(tx),
+            fired: false,
+        }
+    }
+}
+
+impl NodeHandle for OneShotNode {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+    fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> {
+        None
+    }
+    fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
+        if self.fired {
+            self.tx.take()
+        } else {
+            None
+        }
+    }
+    fn update(&mut self, _time: SimTime) -> Option<SimTime> {
+        self.fired = true;
+        None // only one wake
+    }
+}
+
 // ===========================================================================
 // Channel edge-case tests
 // ===========================================================================
@@ -99,7 +144,6 @@ fn resolve_before_any_tx_ends_returns_empty() {
     let mut ch = Channel::new();
     let tx = default_tx(); // duration 50_000
     ch.begin_transmission(NodeId(1), &tx, 0);
-    // Resolve at a time before the TX ends
     let events = ch.resolve_at(25_000);
     assert!(events.is_empty(), "no TX should complete before its end time");
 }
@@ -332,7 +376,6 @@ fn two_periodic_nodes_both_transmit() {
 
     // Node 1: wakes at 0, 100k, 200k, 300k, 400k = 5 TXs
     // Node 2: wakes at 0, 150k, 300k, 450k = 4 TXs
-    // Each TX is received by the other node (different freq, no collision)
     assert_eq!(sched.metrics.node_tx_count(NodeId(1)), 5);
     assert_eq!(sched.metrics.node_tx_count(NodeId(2)), 4);
     assert_eq!(sched.metrics.total_tx, 9);
@@ -372,8 +415,8 @@ fn scheduler_with_no_events_terminates() {
 #[test]
 fn node_without_tx_still_receives() {
     let mut sched = Scheduler::new(200_000);
-    // Sender transmits once
-    let sender = CountingNode::new(1, 999_999_999, Some(default_tx()));
+    // Sender transmits exactly once
+    let sender = OneShotNode::new(1, default_tx());
     let listener = InertNode { id: NodeId(2) };
     sched.add_node(Box::new(sender), Some(0));
     sched.add_node(Box::new(listener), None);
@@ -390,8 +433,6 @@ fn node_without_tx_still_receives() {
 
 #[test]
 fn capture_weaker_arrives_first() {
-    // The weaker signal starts first, then the stronger one arrives.
-    // The stronger should capture (survive), weaker should be collided.
     let mut ch = Channel::new();
     let weak = make_tx(7, 868_100_000, 50_000, 8);
     let strong = make_tx(7, 868_100_000, 50_000, 20);
@@ -400,8 +441,14 @@ fn capture_weaker_arrives_first() {
     ch.resolve_at(60_000);
 
     let completed = ch.drain_completed();
-    let weak_entry = completed.iter().find(|(id, _, _, _)| *id == NodeId(1)).unwrap();
-    let strong_entry = completed.iter().find(|(id, _, _, _)| *id == NodeId(2)).unwrap();
+    let weak_entry = completed
+        .iter()
+        .find(|(id, _, _, _)| *id == NodeId(1))
+        .unwrap();
+    let strong_entry = completed
+        .iter()
+        .find(|(id, _, _, _)| *id == NodeId(2))
+        .unwrap();
 
     assert!(weak_entry.1, "weak (arrived first) should be collided");
     assert!(!strong_entry.1, "strong (arrived second) should survive");
@@ -410,7 +457,6 @@ fn capture_weaker_arrives_first() {
 
 #[test]
 fn with_co_channel_rejection_affects_capture_threshold() {
-    // With a very high threshold, even large power differences don't cause capture
     let mut ch = Channel::with_co_channel_rejection(50.0);
     let strong = make_tx(7, 868_100_000, 50_000, 20);
     let weak = make_tx(7, 868_100_000, 50_000, -10);
@@ -427,7 +473,7 @@ fn with_co_channel_rejection_affects_capture_threshold() {
 }
 
 // ===========================================================================
-// Channel + Scheduler: RSSI/SNR values are plausible in delivered frames
+// Channel: RSSI/SNR values in delivered frames
 // ===========================================================================
 
 #[test]
