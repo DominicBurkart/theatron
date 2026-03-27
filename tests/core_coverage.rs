@@ -374,11 +374,12 @@ fn two_periodic_nodes_both_transmit() {
     sched.add_node(Box::new(node2), Some(0));
     sched.run();
 
-    // Node 1: wakes at 0, 100k, 200k, 300k, 400k = 5 TXs
-    // Node 2: wakes at 0, 150k, 300k, 450k = 4 TXs
-    assert_eq!(sched.metrics.node_tx_count(NodeId(1)), 5);
+    // Scheduler processes events where event.time <= end_time (breaks on >).
+    // Node 1: wakes at 0, 100k, 200k, 300k, 400k, 500k = 6 TXs
+    // Node 2: wakes at 0, 150k, 300k, 450k = 4 TXs (next 600k > 500k)
+    assert_eq!(sched.metrics.node_tx_count(NodeId(1)), 6);
     assert_eq!(sched.metrics.node_tx_count(NodeId(2)), 4);
-    assert_eq!(sched.metrics.total_tx, 9);
+    assert_eq!(sched.metrics.total_tx, 10);
     assert_eq!(sched.metrics.total_collisions, 0);
 }
 
@@ -392,6 +393,8 @@ fn scheduler_current_time_advances() {
     sched.run();
 
     // Node wakes at 100k, 300k, 500k, 700k, 900k; next would be 1100k > end
+    // The wake at 1_000_000+100k is scheduled but > end, so last processed is 900k.
+    // Actually: 100k, 300k, 500k, 700k, 900k, next=1100k > 1000k. Last = 900k.
     assert_eq!(sched.current_time(), 900_000);
 }
 
