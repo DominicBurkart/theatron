@@ -466,9 +466,7 @@ mod tests {
             self.id
         }
         fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> {
-            if !self.received {
-                self.received = true;
-            }
+            self.received = true;
             None
         }
         fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
@@ -583,9 +581,9 @@ mod tests {
         sched.run();
 
         assert_eq!(sched.metrics.total_tx, 2);
-        assert!(
-            sched.metrics.total_collisions > 0,
-            "overlapping same-SF/freq TXs must collide"
+        assert_eq!(
+            sched.metrics.total_collisions, 2,
+            "overlapping same-SF/freq TXs must both collide"
         );
         assert_eq!(sched.metrics.total_rx, 0);
     }
@@ -692,7 +690,10 @@ mod tests {
         assert_eq!(sched.metrics.total_tx, 2);
         assert_eq!(sched.metrics.total_captures, 1);
         assert_eq!(sched.metrics.total_collisions, 1);
-        assert!(sched.metrics.total_rx > 0, "strong TX must be delivered");
+        assert_eq!(
+            sched.metrics.total_rx, 2,
+            "strong TX delivered to both non-sender nodes"
+        );
     }
 
     #[test]
