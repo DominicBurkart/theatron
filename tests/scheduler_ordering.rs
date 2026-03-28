@@ -25,6 +25,7 @@ fn make_tx(sf: u8, frequency: u32, duration_us: u64) -> Transmission {
 /// A node that records every time `update` is called so we can verify ordering.
 struct TimestampRecorder {
     id: NodeId,
+    #[allow(dead_code)]
     wakes: Vec<SimTime>,
     remaining_wakes: u32,
     period: u64,
@@ -62,11 +63,11 @@ impl NodeHandle for TimestampRecorder {
     }
 }
 
-/// A node that transmits once on its first wake.
+/// A node that transmits once on its first wake, and never again.
 struct SingleTxNode {
     id: NodeId,
     tx: Option<Transmission>,
-    received: Vec<RxMetadata>,
+    woken: bool,
 }
 
 impl SingleTxNode {
@@ -74,7 +75,7 @@ impl SingleTxNode {
         Self {
             id: NodeId(id),
             tx: Some(tx),
-            received: Vec::new(),
+            woken: false,
         }
     }
 }
@@ -83,12 +84,44 @@ impl NodeHandle for SingleTxNode {
     fn node_id(&self) -> NodeId {
         self.id
     }
-    fn on_receive(&mut self, frame: RxMetadata, _t: SimTime) -> Option<SimTime> {
-        self.received.push(frame);
+    fn on_receive(&mut self, _frame: RxMetadata, _t: SimTime) -> Option<SimTime> {
         None
     }
     fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
-        self.tx.take()
+        // Only transmit if we were just woken by update, not during on_receive delivery.
+        if self.woken {
+            self.woken = false;
+            self.tx.take()
+        } else {
+            None
+        }
+    }
+    fn update(&mut self, _t: SimTime) -> Option<SimTime> {
+        self.woken = true;
+        None
+    }
+}
+
+/// A purely passive node that never transmits.
+struct PassiveReceiver {
+    id: NodeId,
+}
+
+impl PassiveReceiver {
+    fn new(id: u32) -> Self {
+        Self { id: NodeId(id) }
+    }
+}
+
+impl NodeHandle for PassiveReceiver {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+    fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> {
+        None
+    }
+    fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
+        None
     }
     fn update(&mut self, _t: SimTime) -> Option<SimTime> {
         None
@@ -188,11 +221,8 @@ fn node_with_no_wake_and_no_events_stays_idle() {
 #[test]
 fn two_interferers_collide_with_each_other() {
     let mut sched = Scheduler::new(200_000);
-    // A receiver to observe metrics.
-    sched.add_node(
-        Box::new(SingleTxNode::new(1, make_tx(7, 868_100_000, 50_000))),
-        None, // not woken, just a passive receiver
-    );
+    // A passive receiver to observe deliveries.
+    sched.add_node(Box::new(PassiveReceiver::new(1)), None);
     sched.add_interferer(
         Box::new(CountedInterferer {
             tx: make_tx(7, 868_100_000, 50_000),
@@ -221,10 +251,7 @@ fn two_interferers_collide_with_each_other() {
 #[test]
 fn two_interferers_different_sf_no_collision() {
     let mut sched = Scheduler::new(200_000);
-    sched.add_node(
-        Box::new(SingleTxNode::new(1, make_tx(7, 868_100_000, 50_000))),
-        None,
-    );
+    sched.add_node(Box::new(PassiveReceiver::new(1)), None);
     sched.add_interferer(
         Box::new(CountedInterferer {
             tx: make_tx(7, 868_100_000, 50_000),
@@ -269,14 +296,7 @@ fn multi_sf_concurrent_tx_all_deliver() {
         );
     }
     // One passive receiver.
-    sched.add_node(
-        Box::new(SingleTxNode::new(
-            99,
-            // This node won't transmit because it has no wake.
-            make_tx(7, 868_100_000, 50_000),
-        )),
-        None,
-    );
+    sched.add_node(Box::new(PassiveReceiver::new(99)), None);
     sched.run();
     assert_eq!(sched.metrics.total_tx, 6, "all 6 SF nodes must transmit");
     assert_eq!(
@@ -299,61 +319,24 @@ fn multi_sf_concurrent_tx_all_deliver() {
 /// A transmission that starts exactly when another ends should not collide.
 #[test]
 fn back_to_back_tx_through_scheduler_no_collision() {
-    // Node 1 sends at t=0 (duration 50_000us).
-    // Node 2 should send at t=50_000 (no overlap).
-    // We use a SequentialPair to coordinate this.
-    struct SequentialPair {
-        id: NodeId,
-        tx: Option<Transmission>,
-        wake_time: Option<SimTime>,
-    }
-    impl NodeHandle for SequentialPair {
-        fn node_id(&self) -> NodeId {
-            self.id
-        }
-        fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> {
-            None
-        }
-        fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
-            self.tx.take()
-        }
-        fn update(&mut self, _t: SimTime) -> Option<SimTime> {
-            self.wake_time.take()
-        }
-    }
-
     let mut sched = Scheduler::new(200_000);
     sched.add_node(
-        Box::new(SequentialPair {
-            id: NodeId(1),
-            tx: Some(make_tx(7, 868_100_000, 50_000)),
-            wake_time: None,
-        }),
+        Box::new(SingleTxNode::new(1, make_tx(7, 868_100_000, 50_000))),
         Some(0),
     );
     sched.add_node(
-        Box::new(SequentialPair {
-            id: NodeId(2),
-            tx: Some(make_tx(7, 868_100_000, 50_000)),
-            wake_time: None,
-        }),
+        Box::new(SingleTxNode::new(2, make_tx(7, 868_100_000, 50_000))),
         Some(50_000), // starts exactly when node 1 ends
     );
     // Passive receiver.
-    sched.add_node(
-        Box::new(SequentialPair {
-            id: NodeId(3),
-            tx: None,
-            wake_time: None,
-        }),
-        None,
-    );
+    sched.add_node(Box::new(PassiveReceiver::new(3)), None);
     sched.run();
     assert_eq!(sched.metrics.total_tx, 2);
     assert_eq!(
         sched.metrics.total_collisions, 0,
         "back-to-back (non-overlapping) TXs must not collide"
     );
+    // Node 1 TX delivered to nodes 2 and 3; node 2 TX delivered to nodes 1 and 3.
     assert_eq!(
         sched.metrics.total_rx, 4,
         "each of 2 TXs delivered to 2 other nodes = 4"
