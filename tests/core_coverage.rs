@@ -435,7 +435,9 @@ fn scheduler_interferer_and_node_different_sf_no_collision() {
     sched.run();
 
     assert_eq!(sched.metrics.total_collisions, 0);
-    assert_eq!(sched.metrics.total_rx, 1, "receiver gets the node TX");
+    // Node 1's SF7 TX is received by Node 2 (1 RX), and the interferer's SF12
+    // TX is received by both Node 1 and Node 2 (2 RX) = 3 total.
+    assert_eq!(sched.metrics.total_rx, 3, "node TX + interferer TX delivered on different SFs");
 }
 
 #[test]
