@@ -202,11 +202,13 @@ impl Channel {
     /// assert!(!completed[0].1);
     /// ```
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
+        let path_loss_db = self.path_loss_db;
+        let noise_floor_dbm = self.noise_floor_dbm;
         self.completed
             .drain(..)
             .map(|tx| {
-                let rssi = self.compute_rssi(tx.tx_power_dbm);
-                let snr = self.compute_snr(rssi);
+                let rssi = tx.tx_power_dbm as f32 - path_loss_db;
+                let snr = rssi - noise_floor_dbm;
                 let metadata = RxMetadata {
                     payload: tx.payload,
                     rssi,
