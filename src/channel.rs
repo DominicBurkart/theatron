@@ -173,45 +173,6 @@ impl Channel {
         events
     }
 
-    /// Return all completed, non-collided transmissions as received frames.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x42],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ch.resolve_at(50_000);
-    /// let received = ch.deliver_to(50_000);
-    /// assert_eq!(received.len(), 1);
-    /// assert_eq!(received[0].payload, vec![0x42]);
-    /// ```
-    pub fn deliver_to(&self, time: SimTime) -> Vec<RxMetadata> {
-        self.completed
-            .iter()
-            .filter(|tx| tx.end <= time && !tx.collided)
-            .map(|tx| RxMetadata {
-                payload: tx.payload.clone(),
-                rssi: self.compute_rssi(tx.tx_power_dbm),
-                snr: self.compute_snr(self.compute_rssi(tx.tx_power_dbm)),
-                sf: tx.sf,
-                frequency: tx.frequency,
-                time: tx.end,
-            })
-            .collect()
-    }
-
     /// Drain and return all completed transmissions as `CompletedTx` tuples.
     ///
     /// Each entry is `(sender, collided, captured, RxMetadata)`. RSSI and SNR
@@ -241,13 +202,11 @@ impl Channel {
     /// assert!(!completed[0].1);
     /// ```
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
-        let path_loss_db = self.path_loss_db;
-        let noise_floor_dbm = self.noise_floor_dbm;
         self.completed
             .drain(..)
             .map(|tx| {
-                let rssi = tx.tx_power_dbm as f32 - path_loss_db;
-                let snr = rssi - noise_floor_dbm;
+                let rssi = self.compute_rssi(tx.tx_power_dbm);
+                let snr = self.compute_snr(rssi);
                 let metadata = RxMetadata {
                     payload: tx.payload,
                     rssi,
@@ -304,14 +263,15 @@ mod tests {
     }
 
     #[test]
-    fn single_transmission_delivers() {
+    fn single_transmission_completes_without_collision() {
         let mut ch = Channel::new();
         let tx = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx, 0);
         ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(50_000);
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 1);
+        assert!(!completed[0].1, "single TX should not collide");
+        assert_eq!(completed[0].3.payload, vec![0x01, 0x02]);
     }
 
     #[test]
@@ -322,8 +282,8 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 0);
+        let completed = ch.drain_completed();
+        assert!(completed.iter().all(|(_, collided, _, _)| *collided));
     }
 
     #[test]
@@ -334,8 +294,9 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 2);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 2);
+        assert!(completed.iter().all(|(_, collided, _, _)| !collided));
     }
 
     #[test]
@@ -346,8 +307,9 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 2);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 2);
+        assert!(completed.iter().all(|(_, collided, _, _)| !collided));
     }
 
     #[test]
@@ -360,8 +322,9 @@ mod tests {
         ch.drain_completed();
         ch.begin_transmission(NodeId(2), &tx2, 60_000);
         ch.resolve_at(110_000);
-        let delivered = ch.deliver_to(110_000);
-        assert_eq!(delivered.len(), 1);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 1);
+        assert!(!completed[0].1);
     }
 
     #[test]
@@ -399,9 +362,13 @@ mod tests {
         ch.begin_transmission(NodeId(1), &strong, 0);
         ch.begin_transmission(NodeId(2), &weak, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
+        let completed = ch.drain_completed();
+        let strong_entry = completed
+            .iter()
+            .find(|(id, _, _, _)| *id == NodeId(1))
+            .unwrap();
+        assert!(!strong_entry.1, "strong should not be collided");
+        assert!(strong_entry.2, "strong should be captured");
     }
 
     #[test]
@@ -413,16 +380,10 @@ mod tests {
         ch.begin_transmission(NodeId(2), &weak, 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        let strong_entry = completed
-            .iter()
-            .find(|(id, _, _, _)| *id == NodeId(1))
-            .unwrap();
         let weak_entry = completed
             .iter()
             .find(|(id, _, _, _)| *id == NodeId(2))
             .unwrap();
-        assert!(!strong_entry.1, "strong should not be collided");
-        assert!(strong_entry.2, "strong should be captured");
         assert!(weak_entry.1, "weak should be collided");
     }
 
@@ -434,8 +395,11 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 0, "delta=5 < threshold=6 → both collide");
+        let completed = ch.drain_completed();
+        assert!(
+            completed.iter().all(|(_, collided, _, _)| *collided),
+            "delta=5 < threshold=6 -> both collide"
+        );
     }
 
     #[test]
@@ -446,11 +410,12 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.drain_completed();
+        let non_collided: Vec<_> = completed.iter().filter(|(_, c, _, _)| !c).collect();
         assert_eq!(
-            delivered.len(),
+            non_collided.len(),
             1,
-            "delta=6 == threshold=6 → stronger survives"
+            "delta=6 == threshold=6 -> stronger survives"
         );
     }
 
@@ -464,13 +429,13 @@ mod tests {
         ch.begin_transmission(NodeId(2), &medium, 5_000);
         ch.begin_transmission(NodeId(3), &weak, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.drain_completed();
+        let non_collided: Vec<_> = completed.iter().filter(|(_, c, _, _)| !c).collect();
         assert_eq!(
-            delivered.len(),
+            non_collided.len(),
             1,
             "only strongest survives three-way collision"
         );
-        let completed = ch.drain_completed();
         let strong_entry = completed
             .iter()
             .find(|(id, _, _, _)| *id == NodeId(1))
@@ -486,8 +451,11 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 0, "delta=6 < threshold=10 → both collide");
+        let completed = ch.drain_completed();
+        assert!(
+            completed.iter().all(|(_, collided, _, _)| *collided),
+            "delta=6 < threshold=10 -> both collide"
+        );
     }
 
     #[test]
@@ -496,10 +464,11 @@ mod tests {
         let tx = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &tx, 0);
         ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(50_000);
-        assert_eq!(delivered.len(), 1);
-        assert!((delivered[0].rssi - (14.0_f32 - 100.0)).abs() < 0.001);
-        assert!((delivered[0].snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 1);
+        let meta = &completed[0].3;
+        assert!((meta.rssi - (14.0_f32 - 100.0)).abs() < 0.001);
+        assert!((meta.snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
     }
 
     proptest! {
