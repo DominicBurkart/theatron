@@ -740,6 +740,86 @@ mod tests {
         assert!(sched.metrics.total_collisions > 0);
         assert_eq!(sched.metrics.total_rx, 0, "collision prevents delivery");
     }
+    #[test]
+    fn test_events_dequeue_in_time_order() {
+        let mut heap = BinaryHeap::new();
+        let times: Vec<SimTime> = vec![500, 100, 300, 200, 400];
+        for (i, &t) in times.iter().enumerate() {
+            heap.push(ScheduledEvent {
+                time: t,
+                seq: i as u64,
+                kind: EventKind::Wake {
+                    node_id: NodeId(i as u32),
+                },
+            });
+        }
+        let mut popped_times = Vec::new();
+        while let Some(ev) = heap.pop() {
+            popped_times.push(ev.time);
+        }
+        for w in popped_times.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "events must dequeue in ascending time order, got {} before {}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_same_time_events_ordered_by_sequence() {
+        let mut heap = BinaryHeap::new();
+        for seq in [5u64, 1, 3, 0, 4, 2] {
+            heap.push(ScheduledEvent {
+                time: 1000,
+                seq,
+                kind: EventKind::Wake {
+                    node_id: NodeId(seq as u32),
+                },
+            });
+        }
+        let mut popped_seqs = Vec::new();
+        while let Some(ev) = heap.pop() {
+            popped_seqs.push(ev.seq);
+        }
+        for w in popped_seqs.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "same-time events must dequeue in ascending seq order, got {} before {}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_schedule_and_advance() {
+        let mut sched = Scheduler::new(1_000_000);
+        sched.schedule(500, EventKind::Wake { node_id: NodeId(1) });
+        sched.schedule(100, EventKind::Wake { node_id: NodeId(2) });
+        sched.schedule(300, EventKind::Wake { node_id: NodeId(3) });
+
+        let e1 = sched.events.pop().unwrap();
+        let e2 = sched.events.pop().unwrap();
+        let e3 = sched.events.pop().unwrap();
+
+        assert_eq!(e1.time, 100, "first popped event should be earliest");
+        assert_eq!(e2.time, 300);
+        assert_eq!(e3.time, 500, "last popped event should be latest");
+
+        let mut sched2 = Scheduler::new(1_000_000);
+        sched2.add_node(Box::new(PeriodicNode::new(1, 200_000)), Some(100_000));
+        sched2.run();
+        assert!(
+            sched2.current_time() <= 1_000_000,
+            "scheduler must not exceed end_time"
+        );
+        assert!(
+            sched2.current_time() >= 900_000,
+            "scheduler should have advanced to at least 900k"
+        );
+    }
 
     /// Verify that `Scheduler::with_channel` propagates custom physical-layer
     /// parameters: a strict capture threshold (10 dB) means a 6 dB delta that
