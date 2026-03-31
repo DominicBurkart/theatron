@@ -83,8 +83,6 @@ struct ActiveTransmission {
     sender: NodeId,
     payload: Vec<u8>,
     sf: u8,
-    #[allow(dead_code)]
-    bandwidth: u32,
     frequency: u32,
     start: SimTime,
     end: SimTime,
@@ -235,7 +233,6 @@ impl Channel {
             sender,
             payload: tx.payload.clone(),
             sf: tx.sf,
-            bandwidth: tx.bandwidth,
             frequency: tx.frequency,
             start: time,
             end,
@@ -321,13 +318,16 @@ impl Channel {
         self.completed
             .iter()
             .filter(|tx| tx.end <= time && !tx.collided)
-            .map(|tx| RxMetadata {
-                payload: tx.payload.clone(),
-                rssi: self.compute_rssi(tx.tx_power_dbm),
-                snr: self.compute_snr(self.compute_rssi(tx.tx_power_dbm)),
-                sf: tx.sf,
-                frequency: tx.frequency,
-                time: tx.end,
+            .map(|tx| {
+                let rssi = self.compute_rssi(tx.tx_power_dbm);
+                RxMetadata {
+                    payload: tx.payload.clone(),
+                    rssi,
+                    snr: self.compute_snr(rssi),
+                    sf: tx.sf,
+                    frequency: tx.frequency,
+                    time: tx.end,
+                }
             })
             .collect()
     }
