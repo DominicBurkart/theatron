@@ -36,7 +36,7 @@ fn make_tx(sf: u8, frequency: u32, duration_us: u64) -> Transmission {
 /// A slotted-Aloha node that wakes once per `slot_period_us`, queues a
 /// transmission on every wake, and re-schedules itself for the next slot.
 ///
-/// Each node starts in a different slot (offset = `node_index * slot_duration_us`)
+/// Each node starts in a different slot (offset = `node_index * INITIAL_SPREAD_US`)
 /// so the initial wakes are spread out; after that all nodes repeat every
 /// `slot_period_us`.  The node records how many times it has transmitted so
 /// the test can verify per-node activity.
@@ -96,12 +96,18 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
     // Slot duration is longer than a single TX so nodes do not permanently
     // collide with themselves.
     const TX_DURATION_US: u64 = 50_000; // 50 ms
-    const SLOT_PERIOD_US: u64 = 500_000; // 500 ms – each node transmits ~twice per second
-    // Spread initial wakes evenly across one slot period so that at t=0 no
-    // two nodes start at the exact same time.
+    const SLOT_PERIOD_US: u64 = 500_000; // 500 ms – each node gets ~20 slots in 10 s
+    // Spread initial wakes evenly across one slot period so that no two nodes
+    // fire at the exact same microsecond at t=0.
     const INITIAL_SPREAD_US: u64 = SLOT_PERIOD_US / NUM_NODES as u64; // 10 ms per node
     // Run for 10 seconds; each node should get ~20 transmission opportunities.
     const END_TIME_US: u64 = 10_000_000;
+    // Lower bound: even if every other slot collides, each node must have
+    // fired at least once in 10 s with a 500 ms period.
+    const MIN_TX_PER_NODE: u64 = 1;
+    // Upper bound: 10 s / 500 ms = 20 slots per node, plus one potential
+    // boundary slot = 21.
+    const MAX_TX_PER_NODE: u64 = 21;
 
     let mut sched = Scheduler::new(END_TIME_US);
 
@@ -120,7 +126,7 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
     for id in 1..=NUM_NODES {
         let count = sched.metrics.node_tx_count(NodeId(id));
         assert!(
-            count >= 1,
+            count >= MIN_TX_PER_NODE,
             "node {} never transmitted (count={})",
             id,
             count
@@ -138,6 +144,18 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
         sched.metrics.total_tx,
         per_node_sum
     );
+
+    // --- invariant 3: per-node tx count is within a plausible range ---
+    for id in 1..=NUM_NODES {
+        let count = sched.metrics.node_tx_count(NodeId(id));
+        assert!(
+            count <= MAX_TX_PER_NODE,
+            "node {} tx count {} exceeds the expected maximum of {}",
+            id,
+            count,
+            MAX_TX_PER_NODE
+        );
+    }
 
     // --- sanity: the simulation actually ran ---
     assert!(
@@ -225,6 +243,12 @@ proptest! {
     /// * `total_rx   <= total_tx * num_receivers`   – can't receive more than was sent
     /// * `total_collisions <= total_tx`             – collisions can't exceed transmissions
     /// * `total_captures   <= total_collisions`     – captures are a subset of collisions
+    ///
+    /// Receiver count derivation: there are `num_nodes` senders (IDs 1..=num_nodes)
+    /// plus 1 dedicated listener (ID num_nodes+1).  When any one sender transmits,
+    /// the remaining `num_nodes - 1` senders plus the 1 listener can receive it,
+    /// giving exactly `num_nodes` potential receivers per successful TX.
+    /// Using `num_nodes` as the bound is therefore the exact tight upper bound.
     #[test]
     fn metrics_invariants_hold(
         num_nodes in 2usize..=20usize,
@@ -254,11 +278,8 @@ proptest! {
         sched.run();
 
         let m = &sched.metrics;
-        // num_receivers: everyone except the sender themselves can receive.
-        // In the worst case all num_nodes senders are receivers of each other,
-        // plus the dedicated listener → num_nodes receivers per TX is the safe
-        // upper bound (the dedicated listener adds one more, but that only
-        // relaxes the bound, so num_nodes is conservative).
+        // Each TX can be received by at most num_nodes receivers:
+        //   (num_nodes - 1) other senders + 1 dedicated listener = num_nodes.
         let num_receivers = num_nodes as u64;
 
         prop_assert!(
@@ -283,12 +304,12 @@ proptest! {
 // Test 3: PeriodicTrafficModel
 // ---------------------------------------------------------------------------
 
-/// Generates one payload every `interval_us` microseconds, starting at
-/// `interval_us` (i.e. the first packet is available at time == interval_us).
+/// Generates one payload every `interval_us` microseconds.
 ///
-/// The model is stateless with respect to the node: it compares `time` to the
-/// last-generated timestamp and returns a payload whenever a full interval has
-/// elapsed since the previous one.
+/// The first packet is available at the first time `t` where
+/// `t >= interval_us`; subsequent packets are available each time a full
+/// `interval_us` has elapsed since the previous emission.  Calls to
+/// `next_payload` within the same interval return `None`.
 pub struct PeriodicTrafficModel {
     interval_us: u64,
     last_generated_us: u64,
@@ -348,6 +369,13 @@ fn periodic_traffic_model_does_not_emit_twice_in_same_interval() {
     for _ in 0..5 {
         assert!(model.next_payload(500_000).is_none());
     }
+}
+
+#[test]
+fn periodic_traffic_model_payload_contents_are_correct() {
+    let expected = vec![0xDE, 0xAD, 0xBE, 0xEF];
+    let mut model = PeriodicTrafficModel::new(1_000, expected.clone());
+    assert_eq!(model.next_payload(1_000).unwrap(), expected);
 }
 
 // --- Integration: wire PeriodicTrafficModel into a simulation node ---
@@ -418,15 +446,17 @@ impl NodeHandle for TrafficModelNode {
 ///
 /// Setup:
 /// - Traffic model interval: 1 s (1_000_000 µs)
+/// - Check interval: 100 ms (well below the traffic interval, so no emissions
+///   are missed between checks)
 /// - Simulation duration: 10 s (10_000_000 µs)
-/// - Expected transmissions: 10 (one per second)
+/// - Expected transmissions: 10 (one per second, first at t=1s)
 ///
 /// We allow ±1 to account for boundary effects at the end of the simulation.
 #[test]
 fn traffic_model_node_transmits_at_expected_rate() {
-    const INTERVAL_US: u64 = 1_000_000; // 1 s
-    const CHECK_INTERVAL_US: u64 = 100_000; // check every 100 ms (well below interval)
-    const TX_DURATION_US: u64 = 50_000; // 50 ms TX
+    const INTERVAL_US: u64 = 1_000_000; // 1 s between packets
+    const CHECK_INTERVAL_US: u64 = 100_000; // poll the model every 100 ms
+    const TX_DURATION_US: u64 = 50_000; // 50 ms on-air
     const SIM_DURATION_US: u64 = 10_000_000; // 10 s
 
     let expected_tx: u64 = SIM_DURATION_US / INTERVAL_US; // 10
@@ -456,7 +486,7 @@ fn traffic_model_payload_delivered_correctly() {
     const INTERVAL_US: u64 = 500_000; // 0.5 s
     const CHECK_INTERVAL_US: u64 = 50_000; // 50 ms checks
     const TX_DURATION_US: u64 = 30_000;
-    const SIM_DURATION_US: u64 = 2_000_000; // 2 s → expect 4 transmissions
+    const SIM_DURATION_US: u64 = 2_000_000; // 2 s → expect ~4 transmissions
 
     let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
     let model = PeriodicTrafficModel::new(INTERVAL_US, payload.clone());
@@ -469,8 +499,15 @@ fn traffic_model_payload_delivered_correctly() {
     sched.run();
 
     // All transmissions should be received (no collisions, single sender).
-    assert_eq!(sched.metrics.total_tx, sched.metrics.total_rx,
-        "every TX should be received when there is a single sender and no interference");
+    assert_eq!(
+        sched.metrics.total_tx,
+        sched.metrics.total_rx,
+        "every TX should be received when there is a single sender and no interference"
+    );
     assert_eq!(sched.metrics.total_collisions, 0);
-    assert!(sched.metrics.total_tx >= 3, "expected at least 3 transmissions in a 2 s window");
+    assert!(
+        sched.metrics.total_tx >= 3,
+        "expected at least 3 transmissions in a 2 s window, got {}",
+        sched.metrics.total_tx
+    );
 }
