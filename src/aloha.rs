@@ -1,9 +1,26 @@
 //! Pure ALOHA reference MAC protocol.
 //!
-//! Nodes transmit immediately whenever the traffic model produces a payload.
-//! After each transmission (successful or not), a random backoff is drawn from
-//! `U(0, backoff_range_us)` before the next transmission attempt, giving the
-//! channel time to clear and preventing correlated retransmissions.
+//! Nodes transmit immediately whenever the traffic model produces a payload
+//! (no carrier sensing, no time-slotting).  After every transmission a
+//! uniformly-distributed random backoff is drawn before the next traffic-model
+//! poll, preventing perfectly correlated retransmissions.
+//!
+//! # Design notes
+//!
+//! The node is driven entirely through the [`NodeHandle`] interface:
+//!
+//! 1. The scheduler calls `update(time)` on each wake event.
+//! 2. `update` queries the traffic model and, when a payload is available,
+//!    stores it in `pending_payload` and returns `Some(time)` (immediate
+//!    re-wake) so the scheduler calls `poll_transmit` right away.
+//! 3. `poll_transmit` hands the payload to the scheduler and records a
+//!    pending backoff duration.  Because `poll_transmit` does not receive the
+//!    current time, the *absolute* backoff deadline is computed in the next
+//!    `update` call once the post-TX time is known.
+//! 4. On re-wake after the TX completes, `update` sees `pending_backoff_us`,
+//!    computes `until = time + pending_backoff_us`, enters `Backoff { until }`,
+//!    and returns `Some(until)` so the scheduler wakes the node at the right
+//!    moment.
 //!
 //! # Example
 //!
@@ -24,25 +41,37 @@ use crate::time::SimTime;
 use crate::traits::TrafficModel;
 use crate::types::{NodeId, RxMetadata, Transmission};
 
-// LoRa SF7/BW125 time-on-air for a minimal payload (≈56 ms).
+/// LoRa SF7 / BW125 time-on-air for a minimal payload (~56 ms).
 pub const LORA_SF7_DURATION_US: u64 = 56_000;
+/// EU868 primary uplink frequency (Hz).
 pub const LORA_FREQUENCY: u32 = 868_100_000;
+/// Default TX power (dBm).
 pub const LORA_TX_POWER_DBM: i8 = 14;
 
 // ---------------------------------------------------------------------------
-// Minimal self-contained xorshift64 PRNG (no external deps required).
+// Minimal self-contained xorshift64 PRNG — no external crate needed.
 // ---------------------------------------------------------------------------
 
-/// A fast, deterministic pseudo-random number generator based on xorshift64.
+/// A fast, deterministic xorshift64 PRNG.
 ///
-/// Used internally by [`AlohaNode`] and [`PoissonTraffic`] so that the module
-/// has no dependencies beyond `std`.
+/// Used by both [`PoissonTraffic`] and [`AlohaNode`] so the module requires no
+/// dependencies beyond `std`.
+///
+/// # Example
+///
+/// ```
+/// use theatron::aloha::Xorshift64;
+/// let mut rng = Xorshift64::new(42);
+/// let a = rng.next_u64();
+/// let b = rng.next_u64();
+/// assert_ne!(a, b);
+/// ```
 #[derive(Clone)]
 pub struct Xorshift64(u64);
 
 impl Xorshift64 {
-    /// Create a new PRNG seeded with `seed`.  A seed of `0` is replaced by `1`
-    /// to avoid the all-zero fixed point.
+    /// Create a new RNG.  A seed of `0` is replaced by `1` to avoid the
+    /// all-zero fixed point.
     pub fn new(seed: u64) -> Self {
         Self(if seed == 0 { 1 } else { seed })
     }
@@ -59,13 +88,11 @@ impl Xorshift64 {
 
     /// Return a value uniformly distributed in `[0, range)`.
     ///
-    /// Uses rejection sampling to avoid modulo bias; for ranges that are a
-    /// small fraction of `u64::MAX` this is effectively a single draw.
+    /// Uses rejection sampling to eliminate modulo bias.
     pub fn next_u64_below(&mut self, range: u64) -> u64 {
-        if range == 0 {
+        if range <= 1 {
             return 0;
         }
-        // Rejection sampling: discard values in the biased tail.
         let threshold = u64::MAX - (u64::MAX % range);
         loop {
             let v = self.next_u64();
@@ -77,15 +104,14 @@ impl Xorshift64 {
 }
 
 // ---------------------------------------------------------------------------
-// PoissonTraffic — exponentially-distributed inter-arrival times.
+// PoissonTraffic
 // ---------------------------------------------------------------------------
 
-/// A [`TrafficModel`] that generates packet arrivals according to a Poisson
-/// process with a given mean inter-arrival time.
+/// A [`TrafficModel`] that approximates Poisson packet arrivals.
 ///
-/// Each call to [`next_payload`][TrafficModel::next_payload] either returns a
-/// one-byte payload (when the elapsed time since the last arrival exceeds the
-/// next drawn inter-arrival interval) or `None`.
+/// Inter-arrival times are drawn from a uniform distribution centred on
+/// `mean_us` — i.e. `U(mean_us/2, 3·mean_us/2)` — giving the correct mean
+/// while staying entirely in integer arithmetic.
 ///
 /// # Example
 ///
@@ -94,20 +120,21 @@ impl Xorshift64 {
 /// use theatron::traits::TrafficModel;
 ///
 /// let mut traffic = PoissonTraffic::new(1_000_000, 42);
-/// // At time 0 the node hasn't started yet; first call schedules next arrival.
-/// let _ = traffic.next_payload(0);
+/// // First call at time 0 schedules the first arrival; returns None.
+/// assert!(traffic.next_payload(0).is_none());
 /// ```
 pub struct PoissonTraffic {
     mean_us: u64,
     rng: Xorshift64,
+    /// Absolute simulation time at which the next packet arrives.
     next_arrival_us: Option<SimTime>,
 }
 
 impl PoissonTraffic {
-    /// Create a new Poisson traffic model.
+    /// Create a new traffic model.
     ///
     /// * `mean_us` — mean inter-arrival time in microseconds.
-    /// * `seed`    — PRNG seed for reproducibility.
+    /// * `seed`    — RNG seed for reproducibility.
     pub fn new(mean_us: u64, seed: u64) -> Self {
         Self {
             mean_us,
@@ -116,47 +143,12 @@ impl PoissonTraffic {
         }
     }
 
-    /// Draw an exponentially-distributed inter-arrival delay (µs).
-    ///
-    /// Uses the inverse-CDF transform: `delay = -mean * ln(U)` where `U` is
-    /// uniform in `(0, 1]`.  To stay in integer arithmetic we approximate with
-    /// a geometric distribution: `delay = mean * (number of Bernoulli trials
-    /// until first success with p=1/mean)`.  For simplicity we use the
-    /// well-known approximation `delay ≈ -mean * ln(u / 2^64)` evaluated with
-    /// fixed-point: we draw a random `u64` and compute
-    /// `delay = mean * leading_zeros_weight`.
-    ///
-    /// In practice for a simulator this simple geometric approximation is
-    /// sufficient; the distribution is still memoryless.
+    /// Draw the next inter-arrival interval from `U(mean/2, 3·mean/2)`.
     fn draw_interval(&mut self) -> u64 {
-        // Geometric approximation: repeatedly check each bit of a u64 word.
-        // Each bit is independently 0 with probability 1/2, so the number of
-        // leading zeros of a random u64 is geometrically distributed with
-        // p=0.5.  We scale to the desired mean by tossing `mean_us` trials
-        // of a 1-bit coin, which gives a geometric with mean = 2*mean_us.
-        // Instead, we use the standard approximation:
-        //   interval ≈ mean * geometric(p = 1/mean)
-        // implemented as: sum up 1s until the first 0 in a stream of bits
-        // from our RNG, but scaled so that on average we get mean_us.
-        //
-        // Simpler correct approach: use fixed-point log approximation.
-        // We compute: interval = round(-mean * ln(v)) where v = (raw+1)/2^64.
-        // ln approximation via bit-length: ln(v) ≈ -(63 - floor(log2(raw+1))).
-        // This is crude; instead we use a rejection-free geometric:
-        //   Draw bits until we see the first 1; count of 0s = k.
-        //   P(k=n) = (1/2)^(n+1).  Mean k = 1.
-        //   So interval = mean_us * (k+1) gives mean = 2*mean_us — not right.
-        //
-        // Cleanest no-float approach: just use mean_us directly as a fixed
-        // interval with a small random jitter in [0, 2*mean_us).  This gives
-        // uniform inter-arrivals with the correct mean and is reproducible.
-        // For a reference ALOHA implementation the exact distribution shape
-        // matters less than having a nonzero, non-degenerate arrival process.
-        //
-        // Final choice: uniform in [mean_us/2, 3*mean_us/2) → mean = mean_us.
         let half = self.mean_us / 2;
-        let range = self.mean_us; // width of the uniform window
-        half + self.rng.next_u64_below(range.max(1))
+        // range = mean_us so the window spans [half, half + mean_us) = [mean/2, 3·mean/2).
+        let range = self.mean_us.max(1);
+        half + self.rng.next_u64_below(range)
     }
 }
 
@@ -164,13 +156,13 @@ impl TrafficModel for PoissonTraffic {
     fn next_payload(&mut self, time: SimTime) -> Option<Vec<u8>> {
         match self.next_arrival_us {
             None => {
-                // First call: schedule the first arrival relative to now.
+                // First poll: schedule the first arrival relative to now.
                 let interval = self.draw_interval();
                 self.next_arrival_us = Some(time + interval);
                 None
             }
             Some(next) if time >= next => {
-                // Payload ready — schedule the following arrival.
+                // Arrival ready — schedule the next one and return a payload.
                 let interval = self.draw_interval();
                 self.next_arrival_us = Some(time + interval);
                 Some(vec![0x01])
@@ -181,28 +173,41 @@ impl TrafficModel for PoissonTraffic {
 }
 
 // ---------------------------------------------------------------------------
-// AlohaNode
+// AlohaNode state machine
 // ---------------------------------------------------------------------------
 
-/// State machine phases for an ALOHA node.
+/// Internal phase of an [`AlohaNode`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum AlohaPhase {
-    /// Idle: polling traffic model on each wake.
+enum Phase {
+    /// Polling the traffic model on each wake.
     Idle,
-    /// Waiting for ongoing backoff to expire before polling again.
+    /// Waiting until `until` µs before polling again.
     Backoff { until: SimTime },
-    /// A payload is ready; it will be handed to the scheduler on the next
-    /// `poll_transmit` call.
+    /// A payload is staged; waiting for `poll_transmit` to collect it.
     ReadyToTransmit,
+    /// `poll_transmit` has been called and the TX is on air; the *next*
+    /// `update` call will compute the absolute backoff deadline from the
+    /// stored relative duration.
+    AwaitingBackoffStart { duration_us: u64 },
 }
 
-/// A Pure ALOHA node.
+/// A Pure ALOHA node that implements [`NodeHandle`].
 ///
-/// On each wake the node checks its traffic model.  When a payload is
-/// produced the node marks itself `ReadyToTransmit`; the scheduler then
-/// calls `poll_transmit` and the packet goes on air immediately.  After
-/// every transmission a random backoff is inserted before the next
-/// traffic-model poll.
+/// # Transmit flow
+///
+/// ```text
+/// Idle ──(payload ready)──► ReadyToTransmit
+///   ▲                             │
+///   │                     poll_transmit() called
+///   │                             │
+///   │                   AwaitingBackoffStart { duration_us }
+///   │                             │
+///   │                     next update(time) call
+///   │                             │
+///   │                   Backoff { until = time + duration_us }
+///   │                             │
+///   └──────(until reached)────────┘
+/// ```
 ///
 /// # Example
 ///
@@ -212,40 +217,43 @@ enum AlohaPhase {
 /// use theatron::types::NodeId;
 ///
 /// let traffic = PoissonTraffic::new(5_000_000, 1);
-/// let node = AlohaNode::new(NodeId(42), traffic, 500_000, 2);
+/// let mut node = AlohaNode::new(NodeId(7), traffic, 500_000, 99);
+/// // Node starts in Idle; update at t=0 schedules first traffic poll.
+/// let next = node.update(0);
+/// assert!(next.is_some());
 /// ```
 pub struct AlohaNode<T: TrafficModel> {
     id: NodeId,
     traffic: T,
+    /// Upper bound of the uniform backoff window (µs).
     backoff_range_us: u64,
     rng: Xorshift64,
-    phase: AlohaPhase,
+    phase: Phase,
+    /// Staged payload waiting to be collected by `poll_transmit`.
     pending_payload: Option<Vec<u8>>,
-    /// How many µs after waking should `update` request the next wake?
-    next_poll_delay: u64,
+    /// How often (µs) to poll the traffic model when idle.
+    poll_interval_us: u64,
 }
 
 impl<T: TrafficModel> AlohaNode<T> {
-    /// Create a new ALOHA node.
+    /// Create a new Pure ALOHA node.
     ///
     /// * `id`               — unique node identifier.
-    /// * `traffic`          — traffic model that generates payloads.
-    /// * `backoff_range_us` — upper bound of the uniform backoff window (µs).
-    /// * `seed`             — PRNG seed for the backoff RNG.
+    /// * `traffic`          — traffic model producing payloads.
+    /// * `backoff_range_us` — backoff drawn from `U(0, backoff_range_us)`.
+    /// * `seed`             — RNG seed (for the backoff RNG).
     pub fn new(id: NodeId, traffic: T, backoff_range_us: u64, seed: u64) -> Self {
         Self {
             id,
             traffic,
             backoff_range_us,
             rng: Xorshift64::new(seed),
-            phase: AlohaPhase::Idle,
+            phase: Phase::Idle,
             pending_payload: None,
-            // Poll the traffic model every 1 ms when idle.
-            next_poll_delay: 1_000,
+            poll_interval_us: 1_000, // 1 ms idle polling granularity
         }
     }
 
-    /// Draw a random backoff duration in `[0, backoff_range_us)`.
     fn draw_backoff(&mut self) -> u64 {
         self.rng.next_u64_below(self.backoff_range_us.max(1))
     }
@@ -256,65 +264,55 @@ impl<T: TrafficModel> NodeHandle for AlohaNode<T> {
         self.id
     }
 
-    /// Called by the scheduler when this node wakes up.
-    ///
-    /// Returns the next wake time or `None` if the node has nothing pending.
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
-        match &self.phase.clone() {
-            AlohaPhase::Backoff { until } => {
-                if time >= *until {
-                    // Backoff expired — go back to idle polling.
-                    self.phase = AlohaPhase::Idle;
-                    // Fall through to idle handling below.
-                } else {
-                    // Still in backoff; wake again when it expires.
-                    return Some(*until);
+        match self.phase.clone() {
+            // ── Backoff just started; now we know the current time. ──────────
+            Phase::AwaitingBackoffStart { duration_us } => {
+                let until = time + duration_us;
+                self.phase = Phase::Backoff { until };
+                return Some(until);
+            }
+
+            // ── Waiting for backoff to expire. ───────────────────────────────
+            Phase::Backoff { until } => {
+                if time < until {
+                    return Some(until); // still waiting
                 }
+                // Expired — fall through to idle poll below.
+                self.phase = Phase::Idle;
             }
-            AlohaPhase::ReadyToTransmit => {
-                // poll_transmit will pick up the payload; stay in this phase
-                // until poll_transmit clears it.  Return soon so the scheduler
-                // can call poll_transmit.
-                return Some(time + 1);
+
+            // ── Payload staged; scheduler is about to call poll_transmit. ────
+            // Return the same time so poll_transmit is invoked immediately.
+            Phase::ReadyToTransmit => {
+                return Some(time);
             }
-            AlohaPhase::Idle => {}
+
+            Phase::Idle => {}
         }
 
-        // Idle: ask the traffic model for a payload.
-        let payload = self.traffic.next_payload(time);
-        if let Some(p) = payload {
-            self.pending_payload = Some(p);
-            self.phase = AlohaPhase::ReadyToTransmit;
-            // Wake immediately so poll_transmit is called right away.
-            Some(time)
-        } else {
-            // Nothing yet — poll again after next_poll_delay.
-            Some(time + self.next_poll_delay)
+        // Idle: ask the traffic model for the next payload.
+        match self.traffic.next_payload(time) {
+            Some(payload) => {
+                self.pending_payload = Some(payload);
+                self.phase = Phase::ReadyToTransmit;
+                Some(time) // re-wake immediately so poll_transmit is called
+            }
+            None => Some(time + self.poll_interval_us),
         }
     }
 
-    /// Called by the scheduler immediately after `update` returns.
-    ///
-    /// If a payload is ready, returns a `Transmission` and enters backoff.
     fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
-        if self.phase != AlohaPhase::ReadyToTransmit {
+        if self.phase != Phase::ReadyToTransmit {
             return None;
         }
         let payload = self.pending_payload.take()?;
-        // Transition: after transmitting, always back off.
         let backoff = self.draw_backoff();
-        // We don't know the exact current time in poll_transmit, but the
-        // scheduler will call update next with the post-TX time; we store a
-        // relative backoff that will be applied in the next update call.
-        // To pass the backoff duration to update we temporarily encode it
-        // in the Backoff phase with a sentinel: `until = backoff` (relative).
-        // update() will detect that until < time and treat it as expired,
-        // so we add a large offset.  Better: store a pending_backoff field.
-        // We use a dedicated field for clarity.
-        self.phase = AlohaPhase::Backoff {
-            until: u64::MAX, // placeholder; fixed up in on_receive or next update
+        // We don't have the current time here; record the relative duration
+        // so `update` can compute the absolute deadline on its next call.
+        self.phase = Phase::AwaitingBackoffStart {
+            duration_us: backoff,
         };
-        self.pending_backoff_duration = backoff;
         Some(Transmission {
             payload,
             sf: 7,
@@ -326,11 +324,197 @@ impl<T: TrafficModel> NodeHandle for AlohaNode<T> {
         })
     }
 
-    /// Called when a frame is received from another node.
-    ///
-    /// Pure ALOHA has no carrier sense, so received frames do not affect
-    /// the transmit schedule.
+    /// Pure ALOHA has no carrier sense; received frames do not affect the TX
+    /// schedule.
     fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------
+    // Xorshift64
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn xorshift_zero_seed_becomes_one() {
+        let mut a = Xorshift64::new(0);
+        let mut b = Xorshift64::new(1);
+        assert_eq!(a.next_u64(), b.next_u64());
+    }
+
+    #[test]
+    fn xorshift_deterministic() {
+        let mut a = Xorshift64::new(42);
+        let mut b = Xorshift64::new(42);
+        for _ in 0..200 {
+            assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    fn xorshift_nonzero_output() {
+        let mut rng = Xorshift64::new(1);
+        for _ in 0..1_000 {
+            assert_ne!(rng.next_u64(), 0);
+        }
+    }
+
+    #[test]
+    fn xorshift_below_range_in_bounds() {
+        let mut rng = Xorshift64::new(7);
+        let range = 100u64;
+        for _ in 0..10_000 {
+            assert!(rng.next_u64_below(range) < range);
+        }
+    }
+
+    #[test]
+    fn xorshift_below_zero_range_returns_zero() {
+        let mut rng = Xorshift64::new(3);
+        assert_eq!(rng.next_u64_below(0), 0);
+        assert_eq!(rng.next_u64_below(1), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // PoissonTraffic
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn poisson_first_call_returns_none() {
+        let mut t = PoissonTraffic::new(1_000_000, 42);
+        assert!(t.next_payload(0).is_none());
+    }
+
+    #[test]
+    fn poisson_eventually_fires() {
+        let mut t = PoissonTraffic::new(1_000, 42);
+        // Advance in 1 µs steps; a packet must arrive within 2*mean = 2000 µs.
+        let fired = (0u64..2_000).any(|time| t.next_payload(time).is_some());
+        assert!(fired, "traffic model must eventually produce a payload");
+    }
+
+    #[test]
+    fn poisson_second_packet_after_first() {
+        let mut t = PoissonTraffic::new(100, 99);
+        // Skip until first arrival.
+        let first = (0u64..1_000).find(|&time| t.next_payload(time).is_some());
+        let first = first.expect("first packet must arrive");
+        // Second packet must arrive later.
+        let second = (first + 1..first + 1_000).find(|&time| t.next_payload(time).is_some());
+        assert!(second.is_some(), "second packet must arrive after first");
+        assert!(second.unwrap() > first);
+    }
+
+    // ------------------------------------------------------------------
+    // AlohaNode
+    // ------------------------------------------------------------------
+
+    struct OneShot(Option<Vec<u8>>);
+    impl TrafficModel for OneShot {
+        fn next_payload(&mut self, _time: SimTime) -> Option<Vec<u8>> {
+            self.0.take()
+        }
+    }
+
+    struct NeverFire;
+    impl TrafficModel for NeverFire {
+        fn next_payload(&mut self, _time: SimTime) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    #[test]
+    fn idle_node_keeps_waking() {
+        let mut node = AlohaNode::new(NodeId(1), NeverFire, 100_000, 1);
+        let w1 = node.update(0);
+        assert!(w1.is_some());
+        let t1 = w1.unwrap();
+        assert!(t1 > 0, "should schedule a future wake");
+        let w2 = node.update(t1);
+        assert!(w2.is_some());
+    }
+
+    #[test]
+    fn one_shot_produces_transmission() {
+        let traffic = OneShot(Some(vec![0xAB]));
+        let mut node = AlohaNode::new(NodeId(2), traffic, 100_000, 7);
+        // Cycle until ReadyToTransmit.
+        let mut time = 0u64;
+        let tx = loop {
+            let next = node.update(time);
+            let t = node.poll_transmit(time);
+            if t.is_some() {
+                break t;
+            }
+            time = next.unwrap_or(time + 1_000);
+        };
+        assert!(tx.is_some());
+        let tx = tx.unwrap();
+        assert_eq!(tx.payload, vec![0xAB]);
+        assert_eq!(tx.sf, 7);
+        assert_eq!(tx.frequency, LORA_FREQUENCY);
+        assert_eq!(tx.duration_us, LORA_SF7_DURATION_US);
+    }
+
+    #[test]
+    fn poll_transmit_clears_payload() {
+        let traffic = OneShot(Some(vec![0x01]));
+        let mut node = AlohaNode::new(NodeId(3), traffic, 0, 5);
+        let mut time = 0u64;
+        let mut tx_count = 0;
+        for _ in 0..200 {
+            let next = node.update(time);
+            if node.poll_transmit(time).is_some() {
+                tx_count += 1;
+            }
+            time = next.unwrap_or(time + 1_000);
+        }
+        assert_eq!(tx_count, 1, "one-shot traffic should cause exactly one TX");
+    }
+
+    #[test]
+    fn backoff_delays_next_tx() {
+        // Two one-shots with a 500 ms backoff window.
+        struct TwoShot(u8);
+        impl TrafficModel for TwoShot {
+            fn next_payload(&mut self, _time: SimTime) -> Option<Vec<u8>> {
+                if self.0 > 0 {
+                    self.0 -= 1;
+                    Some(vec![self.0])
+                } else {
+                    None
+                }
+            }
+        }
+
+        let backoff_range = 500_000u64;
+        let mut node = AlohaNode::new(NodeId(4), TwoShot(2), backoff_range, 11);
+        let mut tx_times = Vec::new();
+        let mut time = 0u64;
+        for _ in 0..2_000_000 {
+            let next = node.update(time);
+            if node.poll_transmit(time).is_some() {
+                tx_times.push(time);
+            }
+            if tx_times.len() == 2 {
+                break;
+            }
+            time = next.unwrap_or(time + 1_000);
+        }
+        assert_eq!(tx_times.len(), 2, "should see exactly 2 transmissions");
+        // After the first TX the node enters backoff, so the second TX must be
+        // at least the TX duration later (backoff ≥ 0 but TX itself takes time).
+        assert!(
+            tx_times[1] > tx_times[0],
+            "second TX must come after first TX"
+        );
     }
 }
