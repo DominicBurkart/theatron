@@ -92,7 +92,7 @@ repos:
                         echo "⚠️  Claude CLI not found, skipping security review"
                         exit 0
                     fi
-                    REVIEW=$(git diff --cached | claude "You are a security engineer. Review the code being committed to determine if it can be committed/pushed. Does this commit leak any secrets, tokens, sensitive internals, or PII? If so, return a list of security/compliance problems to fix before the commit can be completed. If there are no issues, respond with: NO SECURITY ISSUES FOUND" 2>/dev/null | tee /tmp/claude_review)
+                    REVIEW=$(git diff --cached | claude -p "You are a security engineer. Review the code being committed to determine if it can be committed/pushed. Does this commit leak any secrets, tokens, sensitive internals, or PII? If so, return a list of security/compliance problems to fix before the commit can be completed. If there are no issues, respond with: NO SECURITY ISSUES FOUND" 2>/dev/null | tee /tmp/claude_review)
                     if echo "$REVIEW" | grep -qi "NO SECURITY ISSUES FOUND"; then
                         echo "✅ Security review passed"
                         exit 0

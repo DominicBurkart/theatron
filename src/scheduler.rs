@@ -196,27 +196,16 @@ impl Scheduler {
                 if captured {
                     self.metrics.record_capture();
                 }
-                let mut wakes = Vec::new();
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
                         let next = self.nodes[i].on_receive(frame.clone(), time);
                         self.metrics.record_rx(self.nodes[i].node_id());
                         if let Some(t) = next {
-                            wakes.push((self.nodes[i].node_id(), t));
+                            let node_id = self.nodes[i].node_id();
+                            self.schedule(t, EventKind::Wake { node_id });
                         }
+                        self.handle_poll_transmit(i, time);
                     }
-                }
-                for (node_id, t) in wakes {
-                    self.schedule(t, EventKind::Wake { node_id });
-                }
-                let mut tx_node_idxs = Vec::new();
-                for i in 0..self.nodes.len() {
-                    if self.nodes[i].node_id() != sender {
-                        tx_node_idxs.push(i);
-                    }
-                }
-                for i in tx_node_idxs {
-                    self.handle_poll_transmit(i, time);
                 }
             }
         }
@@ -730,5 +719,215 @@ mod tests {
             prop_assert_eq!(sched.metrics.total_tx, 1u64);
             prop_assert_eq!(sched.metrics.total_rx, n as u64);
         }
+    }
+
+    // A node whose on_receive schedules a future wake, at which point it
+    // transmits a reply.  This exercises the path where on_receive returns
+    // Some(wake_time) → Wake event is scheduled → update() is called →
+    // poll_transmit() is called and the reply TX is counted.
+    struct DelayedReplyNode {
+        id: NodeId,
+        reply_tx: Option<Transmission>,
+        reply_delay_us: u64,
+        poll_transmit_calls: u32,
+    }
+
+    impl NodeHandle for DelayedReplyNode {
+        fn node_id(&self) -> NodeId {
+            self.id
+        }
+
+        fn on_receive(&mut self, _f: RxMetadata, time: SimTime) -> Option<SimTime> {
+            // Schedule a wake in the future; the reply is sent from there.
+            Some(time + self.reply_delay_us)
+        }
+
+        fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
+            self.poll_transmit_calls += 1;
+            self.reply_tx.take()
+        }
+
+        fn update(&mut self, _t: SimTime) -> Option<SimTime> {
+            None
+        }
+    }
+
+    #[test]
+    fn on_receive_wake_triggers_poll_transmit_and_reply() {
+        // Sender fires at t=0.  DelayedReplyNode receives the TX at t=50_000,
+        // schedules a wake at t=60_000, and then sends its reply from
+        // poll_transmit.  Verify that the reply TX is counted and airtime
+        // is the sum of both durations.
+        let mut sched = Scheduler::new(200_000);
+
+        let mut sender = SimpleNode::new(1);
+        sender.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched.add_node(Box::new(sender), Some(0));
+
+        sched.add_node(
+            Box::new(DelayedReplyNode {
+                id: NodeId(2),
+                reply_tx: Some(make_tx(7, 868_100_000, 30_000)),
+                reply_delay_us: 10_000,
+                poll_transmit_calls: 0,
+            }),
+            None,
+        );
+
+        sched.run();
+
+        // Original TX (50 000 µs) + reply TX (30 000 µs).
+        assert_eq!(
+            sched.metrics.total_tx, 2,
+            "sender + delayed-reply must both be counted"
+        );
+        assert_eq!(
+            sched.metrics.total_airtime_us, 80_000,
+            "airtime must include both TXs"
+        );
+    }
+
+    // An interferer that counts every ChannelEvent it receives via observe().
+    struct CountingInterferer {
+        tx: Option<Transmission>,
+        observe_count: usize,
+    }
+
+    impl InterferenceSource for CountingInterferer {
+        fn observe(&mut self, _event: &ChannelEvent, _time: SimTime) {
+            self.observe_count += 1;
+        }
+
+        fn poll_inject(&mut self, _time: SimTime) -> Option<Transmission> {
+            self.tx.take()
+        }
+
+        fn next_poll_time(&self, _current_time: SimTime) -> Option<SimTime> {
+            None
+        }
+    }
+
+    #[test]
+    fn interferer_observe_called_for_node_tx() {
+        // One node transmits once.  The scheduler calls observe() on all
+        // registered interferers twice for each node TX: once at TX-start
+        // (TransmissionStarted) and once at TX-complete (TransmissionCompleted).
+        let mut sched = Scheduler::new(200_000);
+
+        let mut node = SimpleNode::new(1);
+        node.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched.add_node(Box::new(node), Some(0));
+
+        // Use a raw pointer trick: wrap the interferer, add it to the
+        // scheduler, then inspect via metrics after the run.
+        // Because we can't get the interferer back from the scheduler, we
+        // use a shared counter embedded in the interferer's struct and read
+        // the scheduler metrics instead to verify that the correct number of
+        // events were seen.
+        //
+        // Scheduler calls observe() at two points per node TX:
+        //   1. handle_poll_transmit – TransmissionStarted
+        //   2. TxComplete handler   – TransmissionCompleted
+        // So a single node TX → 2 observe() calls.
+        let interferer = CountingInterferer {
+            tx: None,
+            observe_count: 0,
+        };
+
+        // We cannot read observe_count after move, so we use a second
+        // injecting interferer that counts its own observations instead.
+        // We verify indirectly: the TX was counted, meaning all the
+        // scheduler paths that call observe() were exercised.  For a
+        // direct count we need an Rc<Cell<_>> or similar.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        // Rebuild with a shared counter using interior mutability.
+        struct SharedCountInterferer {
+            counter: Rc<Cell<usize>>,
+        }
+        impl InterferenceSource for SharedCountInterferer {
+            fn observe(&mut self, _event: &ChannelEvent, _time: SimTime) {
+                self.counter.set(self.counter.get() + 1);
+            }
+            fn poll_inject(&mut self, _time: SimTime) -> Option<Transmission> {
+                None
+            }
+            fn next_poll_time(&self, _: SimTime) -> Option<SimTime> {
+                None
+            }
+        }
+
+        drop(interferer); // drop the unused one
+
+        let counter = Rc::new(Cell::new(0usize));
+        let mut sched2 = Scheduler::new(200_000);
+        let mut node2 = SimpleNode::new(1);
+        node2.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched2.add_node(Box::new(node2), Some(0));
+        sched2.add_interferer(
+            Box::new(SharedCountInterferer {
+                counter: Rc::clone(&counter),
+            }),
+            // First poll is after the TX completes so the interferer itself
+            // does not inject (it would collide and confuse the count).
+            200_000,
+        );
+        sched2.run();
+
+        // The scheduler calls observe() at:
+        //   • handle_poll_transmit: TransmissionStarted  → +1
+        //   • TxComplete handler:   TransmissionCompleted → +1
+        // Total expected = 2.
+        assert_eq!(
+            counter.get(),
+            2,
+            "observe() must be called twice for a single node TX (start + complete)"
+        );
+        assert_eq!(sched2.metrics.total_tx, 1);
+    }
+
+    #[test]
+    fn interferer_observe_called_for_interferer_own_tx() {
+        // An interferer that injects one TX should observe its own
+        // TransmissionStarted event (called inside InterferencePoll handling)
+        // and the TransmissionCompleted event (called in TxComplete handler).
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct InjectingCountInterferer {
+            counter: Rc<Cell<usize>>,
+            tx: Option<Transmission>,
+        }
+        impl InterferenceSource for InjectingCountInterferer {
+            fn observe(&mut self, _event: &ChannelEvent, _time: SimTime) {
+                self.counter.set(self.counter.get() + 1);
+            }
+            fn poll_inject(&mut self, _time: SimTime) -> Option<Transmission> {
+                self.tx.take()
+            }
+            fn next_poll_time(&self, _: SimTime) -> Option<SimTime> {
+                None
+            }
+        }
+
+        let counter = Rc::new(Cell::new(0usize));
+        let mut sched = Scheduler::new(200_000);
+        sched.add_interferer(
+            Box::new(InjectingCountInterferer {
+                counter: Rc::clone(&counter),
+                tx: Some(make_tx(7, 868_100_000, 50_000)),
+            }),
+            0,
+        );
+        sched.run();
+
+        // InterferencePoll: observe(TransmissionStarted) → +1
+        // TxComplete:        observe(TransmissionCompleted) → +1
+        assert_eq!(
+            counter.get(),
+            2,
+            "interferer must observe its own TX start and complete events"
+        );
     }
 }
