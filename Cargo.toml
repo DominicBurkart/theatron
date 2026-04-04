@@ -28,6 +28,9 @@ lora-modulation = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a
 proptest = "1"
 rand_core = { version = "0.6", default-features = false }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [profile.release]
 lto = true
 codegen-units = 1

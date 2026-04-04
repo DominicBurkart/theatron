@@ -33,6 +33,36 @@ pub fn ms_to_sim_time(ms: u32) -> SimTime {
     ms as u64 * 1_000
 }
 
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn ms_to_sim_time_no_overflow() {
+        let ms: u32 = kani::any();
+        let result = ms_to_sim_time(ms);
+        // u32::MAX * 1_000 fits in u64, so no overflow is possible.
+        assert!(result >= ms as u64);
+        assert_eq!(result, ms as u64 * 1_000);
+    }
+
+    #[kani::proof]
+    fn sim_time_to_ms_consistent() {
+        let t: u64 = kani::any();
+        let ms = sim_time_to_ms(t);
+        assert!(ms <= t);
+        assert_eq!(ms, t / 1_000);
+    }
+
+    #[kani::proof]
+    fn ms_round_trip() {
+        let ms: u32 = kani::any();
+        let sim = ms_to_sim_time(ms);
+        let back = sim_time_to_ms(sim);
+        assert_eq!(back, ms as u64);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
