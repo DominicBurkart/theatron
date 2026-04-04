@@ -499,6 +499,54 @@ mod tests {
         assert!((delivered[0].snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
     }
 
+    #[test]
+    fn zero_payload_single_tx_delivers() {
+        // A transmission with an empty payload must not panic and must be
+        // delivered as a single, non-collided frame.
+        let mut ch = Channel::new();
+        let tx = Transmission {
+            payload: vec![],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 14,
+        };
+        ch.begin_transmission(NodeId(1), &tx, 0);
+        ch.resolve_at(50_000);
+        let delivered = ch.deliver_to(50_000);
+        assert_eq!(delivered.len(), 1, "zero-payload TX must be delivered");
+        assert_eq!(
+            delivered[0].payload,
+            Vec::<u8>::new(),
+            "delivered payload must be empty"
+        );
+    }
+
+    #[test]
+    fn zero_payload_drain_completed_not_collided() {
+        let mut ch = Channel::new();
+        let tx = Transmission {
+            payload: vec![],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 14,
+        };
+        ch.begin_transmission(NodeId(1), &tx, 0);
+        ch.resolve_at(50_000);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 1);
+        assert!(
+            !completed[0].1,
+            "zero-payload TX must not be marked collided"
+        );
+        assert_eq!(completed[0].3.payload, Vec::<u8>::new());
+    }
+
     proptest! {
         #[test]
         fn n_non_overlapping_txs_never_collide(n in 2usize..20) {
@@ -547,6 +595,52 @@ mod tests {
             ch.resolve_at(duration);
             let completed = ch.drain_completed();
             prop_assert!(completed.iter().all(|(_, collided, _, _)| !collided));
+        }
+
+        // Capture-effect monotonicity: when power1 > power2 + 6 dB, only the
+        // stronger signal must be delivered.  The weaker one must be dropped.
+        // This invariant must hold for any combination of legal power values.
+        #[test]
+        fn capture_monotonic_in_power_delta(
+            power1 in -20i8..=30i8,
+            power2 in -20i8..=30i8,
+        ) {
+            // Ensure there is strictly more than 6 dB difference.
+            prop_assume!((power1 as i16 - power2 as i16) > 6);
+
+            let duration = 50_000u64;
+            let tx1 = make_tx_power(7, 868_100_000, duration, power1);
+            let tx2 = make_tx_power(7, 868_100_000, duration, power2);
+
+            // tx1 starts first; tx2 starts later so they overlap.
+            let mut ch = Channel::new();
+            ch.begin_transmission(NodeId(1), &tx1, 0);
+            ch.begin_transmission(NodeId(2), &tx2, 10_000);
+            ch.resolve_at(duration + 10_000);
+            let completed = ch.drain_completed();
+
+            // The stronger transmitter (NodeId(1)) must not be collided.
+            let strong = completed.iter().find(|(id, _, _, _)| *id == NodeId(1));
+            let weak   = completed.iter().find(|(id, _, _, _)| *id == NodeId(2));
+
+            prop_assert!(strong.is_some(), "strong TX must be present in completed list");
+            prop_assert!(weak.is_some(),   "weak TX must be present in completed list");
+
+            let (_, strong_collided, strong_captured, _) = strong.unwrap();
+            let (_, weak_collided,   _,              _) = weak.unwrap();
+
+            prop_assert!(
+                !strong_collided,
+                "stronger signal must not be marked collided when power delta > 6 dB"
+            );
+            prop_assert!(
+                *strong_captured,
+                "stronger signal must be marked captured when power delta > 6 dB"
+            );
+            prop_assert!(
+                *weak_collided,
+                "weaker signal must be marked collided when power delta > 6 dB"
+            );
         }
     }
 }
