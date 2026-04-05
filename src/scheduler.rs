@@ -197,6 +197,7 @@ impl Scheduler {
                     self.metrics.record_capture();
                 }
                 let mut wakes = Vec::new();
+                let mut tx_node_idxs = Vec::new();
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
                         let next = self.nodes[i].on_receive(frame.clone(), time);
@@ -204,16 +205,11 @@ impl Scheduler {
                         if let Some(t) = next {
                             wakes.push((self.nodes[i].node_id(), t));
                         }
+                        tx_node_idxs.push(i);
                     }
                 }
                 for (node_id, t) in wakes {
                     self.schedule(t, EventKind::Wake { node_id });
-                }
-                let mut tx_node_idxs = Vec::new();
-                for i in 0..self.nodes.len() {
-                    if self.nodes[i].node_id() != sender {
-                        tx_node_idxs.push(i);
-                    }
                 }
                 for i in tx_node_idxs {
                     self.handle_poll_transmit(i, time);
