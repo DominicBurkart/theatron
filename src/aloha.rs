@@ -17,10 +17,11 @@
 //!    pending backoff duration.  Because `poll_transmit` does not receive the
 //!    current time, the *absolute* backoff deadline is computed in the next
 //!    `update` call once the post-TX time is known.
-//! 4. On re-wake after the TX completes, `update` sees `pending_backoff_us`,
-//!    computes `until = time + pending_backoff_us`, enters `Backoff { until }`,
-//!    and returns `Some(until)` so the scheduler wakes the node at the right
-//!    moment.
+//! 4. On re-wake after the TX is initiated, `update` sees `pending_backoff_us`,
+//!    computes `until = time + LORA_SF7_DURATION_US + pending_backoff_us`
+//!    (ensuring the backoff guard covers the full on-air time), enters
+//!    `Backoff { until }`, and returns `Some(until)` so the scheduler wakes
+//!    the node at the right moment.
 //!
 //! # Example
 //!
@@ -187,7 +188,7 @@ enum Phase {
     ReadyToTransmit,
     /// `poll_transmit` has been called and the TX is on air; the *next*
     /// `update` call will compute the absolute backoff deadline from the
-    /// stored relative duration.
+    /// stored relative duration plus the on-air guard time.
     AwaitingBackoffStart { duration_us: u64 },
 }
 
@@ -204,7 +205,7 @@ enum Phase {
 ///   │                             │
 ///   │                     next update(time) call
 ///   │                             │
-///   │                   Backoff { until = time + duration_us }
+///   │         Backoff { until = time + LORA_SF7_DURATION_US + duration_us }
 ///   │                             │
 ///   └──────(until reached)────────┘
 /// ```
@@ -267,8 +268,12 @@ impl<T: TrafficModel> NodeHandle for AlohaNode<T> {
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
         match self.phase.clone() {
             // ── Backoff just started; now we know the current time. ──────────
+            //
+            // Add the on-air guard (LORA_SF7_DURATION_US) so the node always
+            // waits at least one full TX duration before re-attempting,
+            // regardless of the drawn backoff value.
             Phase::AwaitingBackoffStart { duration_us } => {
-                let until = time + duration_us;
+                let until = time + LORA_SF7_DURATION_US + duration_us;
                 self.phase = Phase::Backoff { until };
                 return Some(until);
             }
@@ -510,11 +515,15 @@ mod tests {
             time = next.unwrap_or(time + 1_000);
         }
         assert_eq!(tx_times.len(), 2, "should see exactly 2 transmissions");
-        // After the first TX the node enters backoff, so the second TX must be
-        // at least the TX duration later (backoff ≥ 0 but TX itself takes time).
+        // After the first TX the node enters backoff (minimum = LORA_SF7_DURATION_US),
+        // so the second TX must be at least one TX duration after the first.
         assert!(
-            tx_times[1] > tx_times[0],
-            "second TX must come after first TX"
+            tx_times[1] >= tx_times[0] + LORA_SF7_DURATION_US,
+            "second TX must be at least one TX-duration after the first; \
+             first={} second={} duration={}",
+            tx_times[0],
+            tx_times[1],
+            LORA_SF7_DURATION_US
         );
     }
 }
