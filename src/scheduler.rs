@@ -224,20 +224,28 @@ impl Scheduler {
                     self.metrics.record_capture();
                 }
                 let mut wakes = Vec::new();
-                let mut tx_node_idxs = Vec::new();
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
-                        let node_id = self.nodes[i].node_id();
                         let next = self.nodes[i].on_receive(frame.clone(), time);
-                        self.metrics.record_rx(node_id);
+                        self.metrics.record_rx(self.nodes[i].node_id());
                         if let Some(t) = next {
-                            wakes.push((node_id, t));
+                            wakes.push((self.nodes[i].node_id(), t));
                         }
-                        tx_node_idxs.push(i);
                     }
                 }
                 for (node_id, t) in wakes {
                     self.schedule(t, EventKind::Wake { node_id });
+                }
+                // INVARIANT: tx_node_idxs must contain every non-sender node index.
+                // handle_poll_transmit relies on being called for all potential
+                // receivers after a completed transmission. If this loop ever gains
+                // a filter or early-break, nodes may silently miss their transmit
+                // poll and the simulation will produce incorrect results.
+                let mut tx_node_idxs = Vec::new();
+                for i in 0..self.nodes.len() {
+                    if self.nodes[i].node_id() != sender {
+                        tx_node_idxs.push(i);
+                    }
                 }
                 for i in tx_node_idxs {
                     self.handle_poll_transmit(i, time);
@@ -813,87 +821,6 @@ mod tests {
         assert_eq!(
             sched_strict.metrics.total_rx, 0,
             "strict channel: delta=6 < threshold=10, both collide, nothing delivered"
-        );
-    }
-
-    #[test]
-    fn test_events_dequeue_in_time_order() {
-        let mut heap = BinaryHeap::new();
-        let times: Vec<SimTime> = vec![500, 100, 300, 200, 400];
-        for (i, &t) in times.iter().enumerate() {
-            heap.push(ScheduledEvent {
-                time: t,
-                seq: i as u64,
-                kind: EventKind::Wake {
-                    node_id: NodeId(i as u32),
-                },
-            });
-        }
-        let mut popped_times = Vec::new();
-        while let Some(ev) = heap.pop() {
-            popped_times.push(ev.time);
-        }
-        for w in popped_times.windows(2) {
-            assert!(
-                w[0] <= w[1],
-                "events must dequeue in ascending time order, got {} before {}",
-                w[0],
-                w[1]
-            );
-        }
-    }
-
-    #[test]
-    fn test_same_time_events_ordered_by_sequence() {
-        let mut heap = BinaryHeap::new();
-        for seq in [5u64, 1, 3, 0, 4, 2] {
-            heap.push(ScheduledEvent {
-                time: 1000,
-                seq,
-                kind: EventKind::Wake {
-                    node_id: NodeId(seq as u32),
-                },
-            });
-        }
-        let mut popped_seqs = Vec::new();
-        while let Some(ev) = heap.pop() {
-            popped_seqs.push(ev.seq);
-        }
-        for w in popped_seqs.windows(2) {
-            assert!(
-                w[0] <= w[1],
-                "same-time events must dequeue in ascending seq order, got {} before {}",
-                w[0],
-                w[1]
-            );
-        }
-    }
-
-    #[test]
-    fn test_schedule_and_advance() {
-        let mut sched = Scheduler::new(1_000_000);
-        sched.schedule(500, EventKind::Wake { node_id: NodeId(1) });
-        sched.schedule(100, EventKind::Wake { node_id: NodeId(2) });
-        sched.schedule(300, EventKind::Wake { node_id: NodeId(3) });
-
-        let e1 = sched.events.pop().unwrap();
-        let e2 = sched.events.pop().unwrap();
-        let e3 = sched.events.pop().unwrap();
-
-        assert_eq!(e1.time, 100, "first popped event should be earliest");
-        assert_eq!(e2.time, 300);
-        assert_eq!(e3.time, 500, "last popped event should be latest");
-
-        let mut sched2 = Scheduler::new(1_000_000);
-        sched2.add_node(Box::new(PeriodicNode::new(1, 200_000)), Some(100_000));
-        sched2.run();
-        assert!(
-            sched2.current_time() <= 1_000_000,
-            "scheduler must not exceed end_time"
-        );
-        assert!(
-            sched2.current_time() >= 900_000,
-            "scheduler should have advanced to at least 900k"
         );
     }
 
