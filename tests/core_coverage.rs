@@ -121,6 +121,7 @@ impl NodeHandle for EchoNode {
         self.received.push(frame);
         None
     }
+    /// Replies exactly once, on the first poll after the first receive.
     fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
         if !self.received.is_empty() {
             self.reply.take()
@@ -176,12 +177,6 @@ fn channel_empty_drain_returns_nothing() {
 }
 
 #[test]
-fn channel_empty_deliver_returns_nothing() {
-    let ch = Channel::new();
-    assert!(ch.deliver_to(1_000_000).is_empty());
-}
-
-#[test]
 fn channel_resolve_partial_only_finished() {
     let mut ch = Channel::new();
     // TX1 ends at 50_000, TX2 ends at 150_000
@@ -197,13 +192,18 @@ fn channel_resolve_partial_only_finished() {
 }
 
 #[test]
-fn channel_compute_rssi_and_snr_directly() {
+fn channel_compute_rssi_and_snr_with_default_path_loss() {
+    // Coupling: Channel::new() uses path_loss_db=100.0 and noise_floor_dbm=-117.0.
+    // Expected values are derived from those defaults:
+    //   rssi = tx_power_dbm - path_loss_db = 14 - 100 = -86.0
+    //   snr  = rssi - noise_floor_dbm      = -86 - (-117) = 31.0
     let ch = Channel::new();
-    // path_loss_db = 100.0, noise_floor_dbm = -117.0
+    let expected_rssi = 14.0_f32 - 100.0; // tx_power - path_loss_db
+    let expected_snr = expected_rssi - (-117.0_f32); // rssi - noise_floor_dbm
     let rssi = ch.compute_rssi(14);
-    assert!((rssi - (-86.0)).abs() < 0.001);
+    assert!((rssi - expected_rssi).abs() < 0.001);
     let snr = ch.compute_snr(rssi);
-    assert!((snr - 31.0).abs() < 0.001);
+    assert!((snr - expected_snr).abs() < 0.001);
 }
 
 #[test]
@@ -214,21 +214,23 @@ fn channel_compute_rssi_negative_power() {
 }
 
 #[test]
-fn channel_deliver_to_filters_by_time() {
+fn channel_resolve_filters_by_time() {
     let mut ch = Channel::new();
     // TX1 ends at 50_000, TX2 ends at 150_000
     ch.begin_transmission(NodeId(1), &tx(7, 868_100_000, 50_000, 14), 0);
     ch.begin_transmission(NodeId(2), &tx(8, 868_100_000, 150_000, 14), 0);
+    ch.resolve_at(60_000);
+
+    // drain_completed at this point only includes TX1 (only it was resolved)
+    let completed_partial = ch.drain_completed();
+    assert_eq!(completed_partial.len(), 1);
+    assert_eq!(completed_partial[0].0, NodeId(1));
+
+    // Resolve TX2 and confirm it drains correctly
     ch.resolve_at(200_000);
-
-    // deliver_to at 60_000 should only include TX1
-    let delivered = ch.deliver_to(60_000);
-    assert_eq!(delivered.len(), 1);
-    assert_eq!(delivered[0].sf, 7);
-
-    // deliver_to at 200_000 should include both
-    let delivered_all = ch.deliver_to(200_000);
-    assert_eq!(delivered_all.len(), 2);
+    let completed_rest = ch.drain_completed();
+    assert_eq!(completed_rest.len(), 1);
+    assert_eq!(completed_rest[0].0, NodeId(2));
 }
 
 #[test]
@@ -318,9 +320,11 @@ proptest! {
         ch.begin_transmission(NodeId(1), &tx(7, 868_100_000, 50_000, strong_power), 0);
         ch.begin_transmission(NodeId(2), &tx(7, 868_100_000, 50_000, weak_power), 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.drain_completed();
         // Strong should survive, weak should not
-        prop_assert_eq!(delivered.len(), 1);
+        let survivors: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
+        prop_assert_eq!(survivors.len(), 1);
+        prop_assert_eq!(survivors[0].3.rssi, ch.compute_rssi(strong_power));
     }
 
     #[test]
@@ -435,8 +439,9 @@ fn scheduler_interferer_and_node_different_sf_no_collision() {
     sched.run();
 
     assert_eq!(sched.metrics.total_collisions, 0);
-    // Node 1's SF7 TX is received by Node 2 (1 RX), and the interferer's SF12
-    // TX is received by both Node 1 and Node 2 (2 RX) = 3 total.
+    // Node 1 TX (SF7) -> delivered to Node 2 (1 RX)
+    // Interferer TX (SF12) -> delivered to Node 1 and Node 2 (2 RX)
+    // Total: 3 RX
     assert_eq!(sched.metrics.total_rx, 3, "node TX + interferer TX delivered on different SFs");
 }
 
@@ -473,8 +478,10 @@ proptest! {
         dur1 in 10_000u64..100_000,
         dur2 in 10_000u64..100_000,
     ) {
+        // The two TXs use different SFs (7 and 8), so they are orthogonal and
+        // cannot collide regardless of timing overlap. Non-collision here is due
+        // to different-SF isolation, not non-overlapping airtime windows.
         let mut sched = Scheduler::new(1_000_000);
-        // Two non-overlapping transmissions on different SFs (no collision)
         let mut n1 = TestNode::new(1);
         n1.pending_tx = Some(tx(7, 868_100_000, dur1, 14));
         let mut n2 = TestNode::new(2);
