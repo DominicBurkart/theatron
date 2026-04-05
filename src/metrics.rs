@@ -167,6 +167,19 @@ mod tests {
     }
 
     #[test]
+    fn two_nodes_rx_independently() {
+        // Node 1 receives twice; Node 2 receives once.
+        // Per-node counts must be independent and the global total must be 3.
+        let mut m = MetricsCollector::new();
+        m.record_rx(NodeId(1));
+        m.record_rx(NodeId(1));
+        m.record_rx(NodeId(2));
+        assert_eq!(m.node_rx_count(NodeId(1)), 2);
+        assert_eq!(m.node_rx_count(NodeId(2)), 1);
+        assert_eq!(m.total_rx, 3);
+    }
+
+    #[test]
     fn record_collision_increments() {
         let mut m = MetricsCollector::new();
         m.record_collision();
