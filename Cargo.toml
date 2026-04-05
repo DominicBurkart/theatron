@@ -18,8 +18,12 @@ path = "src/main.rs"
 name = "lorawan_file_transfer"
 path = "examples/lorawan_file_transfer/main.rs"
 
+[features]
+default = ["prng"]
+prng = ["rand_core"]
+
 [dependencies]
-rand_core = { version = "0.6", default-features = false }
+rand_core = { version = "0.6", default-features = false, optional = true }
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }

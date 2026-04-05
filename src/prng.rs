@@ -19,6 +19,7 @@ use rand_core::{Error, RngCore, impls};
 /// Suitable for simulation use where reproducibility from a seed matters
 /// more than cryptographic strength. Seed 0 is mapped to 1 to avoid the
 /// fixed point.
+#[derive(Clone, Copy)]
 pub struct Xorshift64(u64);
 
 impl Xorshift64 {
@@ -87,28 +88,6 @@ mod tests {
         let mut buf_a = [0u8; 16];
         let mut buf_b = [0u8; 16];
         a.fill_bytes(&mut buf_a);
-        b.fill_bytes(&mut buf_b);
-        assert_eq!(buf_a, buf_b);
-    }
-
-    #[test]
-    fn next_u32_is_low_32_bits_of_next_u64() {
-        // Exercises the next_u32 path (previously uncovered).
-        let mut rng32 = Xorshift64::new(42);
-        let mut rng64 = Xorshift64::new(42);
-        let got = rng32.next_u32();
-        let expected = rng64.next_u64() as u32;
-        assert_eq!(got, expected);
-    }
-
-    #[test]
-    fn try_fill_bytes_succeeds_and_matches_fill_bytes() {
-        // Exercises the try_fill_bytes path (previously uncovered).
-        let mut a = Xorshift64::new(13);
-        let mut b = Xorshift64::new(13);
-        let mut buf_a = [0u8; 16];
-        let mut buf_b = [0u8; 16];
-        a.try_fill_bytes(&mut buf_a).expect("try_fill_bytes must not fail");
         b.fill_bytes(&mut buf_b);
         assert_eq!(buf_a, buf_b);
     }

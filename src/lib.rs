@@ -1,5 +1,6 @@
 pub mod channel;
 pub mod metrics;
+#[cfg(feature = "prng")]
 pub mod prng;
 pub mod scheduler;
 pub mod time;
