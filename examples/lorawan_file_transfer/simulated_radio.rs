@@ -136,13 +136,16 @@ impl Timings for SimulatedRadio {
 mod tests {
     use super::*;
 
+    const TEST_SF: u8 = 7;
+    const TEST_FREQ: u32 = 868_100_000;
+
     fn make_bb() -> BaseBandModulationParams {
         BaseBandModulationParams::new(SpreadingFactor::_7, Bandwidth::_125KHz, CodingRate::_4_5)
     }
 
     fn make_rf() -> RfConfig {
         RfConfig {
-            frequency: 868_100_000,
+            frequency: TEST_FREQ,
             bb: make_bb(),
             max_payload_len: 255,
         }
@@ -164,7 +167,7 @@ mod tests {
     fn inject_downlink_requires_rx_mode() {
         let mut radio = SimulatedRadio::new();
         // Without entering RX mode, inject_downlink should return false
-        assert!(!radio.inject_downlink(vec![0x01, 0x02, 0x03], 7, 868_100_000));
+        assert!(!radio.inject_downlink(vec![0x01, 0x02, 0x03], TEST_SF, TEST_FREQ));
     }
 
     #[test]
@@ -172,7 +175,7 @@ mod tests {
         let mut radio = SimulatedRadio::new();
         // Enter RX mode first
         let _ = radio.handle_event(Event::RxRequest(make_rf()));
-        assert!(radio.inject_downlink(vec![0x01, 0x02, 0x03], 7, 868_100_000));
+        assert!(radio.inject_downlink(vec![0x01, 0x02, 0x03], TEST_SF, TEST_FREQ));
         assert_eq!(radio.get_received_packet(), &[0x01, 0x02, 0x03]);
     }
 
@@ -187,8 +190,8 @@ mod tests {
         let result = radio.handle_event(Event::TxRequest(tx_config, &payload));
         assert!(result.is_ok());
         let tx = radio.take_pending_tx().expect("should have pending tx");
-        assert_eq!(tx.sf, 7);
-        assert_eq!(tx.frequency, 868_100_000);
+        assert_eq!(tx.sf, TEST_SF);
+        assert_eq!(tx.frequency, TEST_FREQ);
         assert_eq!(tx.payload, &[0x01, 0x02, 0x03]);
     }
 
@@ -206,7 +209,7 @@ mod tests {
         let mut radio = SimulatedRadio::new();
         // Enter RX mode and inject downlink
         let _ = radio.handle_event(Event::RxRequest(make_rf()));
-        radio.inject_downlink(vec![0xAB], 7, 868_100_000);
+        assert!(radio.inject_downlink(vec![0xAB], TEST_SF, TEST_FREQ));
         let result = radio.handle_event(Event::Phy(()));
         assert!(matches!(result, Ok(Response::RxDone(_))));
     }
