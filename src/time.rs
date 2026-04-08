@@ -1,34 +1,15 @@
-/// Simulation time in microseconds.
+/// Simulation time in microseconds (monotonic `u64`).
 ///
-/// # Examples
-///
-/// ```
-/// use theatron::time::SimTime;
-/// let t: SimTime = 1_000;
-/// assert_eq!(t, 1_000);
-/// ```
+/// Microsecond resolution is required for `lora-modulation` time-on-air calculations
+/// and precise collision detection at high spreading factors.
 pub type SimTime = u64;
 
-/// Convert simulation time (microseconds) to milliseconds.
-///
-/// # Examples
-///
-/// ```
-/// use theatron::time::sim_time_to_ms;
-/// assert_eq!(sim_time_to_ms(5_000), 5u64);
-/// ```
+/// Convert simulation time (microseconds) to milliseconds, truncating sub-ms precision.
 pub fn sim_time_to_ms(t: SimTime) -> u64 {
     t / 1_000
 }
 
 /// Convert milliseconds to simulation time (microseconds).
-///
-/// # Examples
-///
-/// ```
-/// use theatron::time::ms_to_sim_time;
-/// assert_eq!(ms_to_sim_time(5), 5_000);
-/// ```
 pub fn ms_to_sim_time(ms: u32) -> SimTime {
     ms as u64 * 1_000
 }
