@@ -172,10 +172,21 @@ mod tests {
         assert!(!radio.has_pending_downlink());
     }
 
+    /// inject_downlink rejects frames when the radio is not in RX mode.
     #[test]
-    fn inject_downlink_populates_rx_buf() {
+    fn inject_downlink_rejected_without_rx_config() {
         let mut radio = SimulatedRadio::new();
-        radio.inject_downlink(vec![0x01, 0x02, 0x03]);
+        assert!(!radio.inject_downlink(vec![0x01, 0x02, 0x03], 7, 868_100_000));
+    }
+
+    /// inject_downlink accepts frames when the radio is in RX mode with matching SF and frequency.
+    #[test]
+    fn inject_downlink_populates_rx_buf_when_listening() {
+        let mut radio = SimulatedRadio::new();
+        radio
+            .handle_event(Event::RxRequest(make_rf()))
+            .expect("RxRequest should succeed");
+        assert!(radio.inject_downlink(vec![0x01, 0x02, 0x03], 7, 868_100_000));
         assert_eq!(radio.get_received_packet(), &[0x01, 0x02, 0x03]);
     }
 
@@ -207,7 +218,10 @@ mod tests {
     #[test]
     fn phy_with_downlink_returns_rx_done() {
         let mut radio = SimulatedRadio::new();
-        radio.inject_downlink(vec![0xAB]);
+        radio
+            .handle_event(Event::RxRequest(make_rf()))
+            .expect("RxRequest should succeed");
+        radio.inject_downlink(vec![0xAB], 7, 868_100_000);
         let result = radio.handle_event(Event::Phy(()));
         assert!(matches!(result, Ok(Response::RxDone(_))));
     }
@@ -222,7 +236,7 @@ mod tests {
     #[test]
     fn timings_values() {
         let radio = SimulatedRadio::new();
-        assert_eq!(radio.get_rx_window_offset_ms(), 0);
-        assert_eq!(radio.get_rx_window_duration_ms(), 100);
+        assert_eq!(radio.get_rx_window_offset_ms(), RX_WINDOW_OFFSET_MS);
+        assert_eq!(radio.get_rx_window_duration_ms(), RX_WINDOW_DURATION_MS);
     }
 }

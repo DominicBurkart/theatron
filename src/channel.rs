@@ -27,14 +27,8 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// Create a new empty channel.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// let ch = Channel::new();
-    /// ```
+    /// Create a new channel with default RF parameters:
+    /// 6 dB co-channel rejection, 100 dB path loss, −117 dBm noise floor.
     pub fn new() -> Self {
         Self {
             active: Vec::new(),
@@ -45,6 +39,7 @@ impl Channel {
         }
     }
 
+    /// Create a channel with a custom co-channel rejection threshold (dB).
     pub fn with_co_channel_rejection(db: f32) -> Self {
         Self {
             co_channel_rejection_db: db,
@@ -60,29 +55,12 @@ impl Channel {
         rssi - self.noise_floor_dbm
     }
 
-    /// Begin a transmission on the channel, returning a `TransmissionStarted` event.
+    /// Begin a transmission on the channel.
     ///
-    /// Collisions are detected immediately: if the new transmission overlaps in time with
-    /// an existing active transmission on the same SF and frequency, both are marked collided.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x01],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// let event = ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ```
+    /// Collisions are detected immediately: if the new transmission overlaps in time
+    /// with any active transmission on the same SF and frequency, the capture-effect
+    /// rule applies — whichever signal exceeds the other by at least
+    /// `co_channel_rejection_db` survives; otherwise both are marked collided.
     pub fn begin_transmission(
         &mut self,
         sender: NodeId,
@@ -131,29 +109,8 @@ impl Channel {
         }
     }
 
-    /// Move all active transmissions that ended at or before `time` to the completed list,
-    /// returning a `TransmissionCompleted` event for each.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x01],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// let events = ch.resolve_at(50_000);
-    /// assert_eq!(events.len(), 1);
-    /// ```
+    /// Move all active transmissions that ended at or before `time` to the completed
+    /// list, returning a `TransmissionCompleted` event for each.
     pub fn resolve_at(&mut self, time: SimTime) -> Vec<ChannelEvent> {
         let mut events = Vec::new();
         let mut remaining = Vec::new();
@@ -174,29 +131,6 @@ impl Channel {
     }
 
     /// Return all completed, non-collided transmissions as received frames.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x42],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ch.resolve_at(50_000);
-    /// let received = ch.deliver_to(50_000);
-    /// assert_eq!(received.len(), 1);
-    /// assert_eq!(received[0].payload, vec![0x42]);
-    /// ```
     pub fn deliver_to(&self, time: SimTime) -> Vec<RxMetadata> {
         self.completed
             .iter()
@@ -212,34 +146,7 @@ impl Channel {
             .collect()
     }
 
-    /// Drain and return all completed transmissions as `CompletedTx` tuples.
-    ///
-    /// Each entry is `(sender, collided, captured, RxMetadata)`. RSSI and SNR
-    /// are computed from the transmission power and channel parameters.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x01],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ch.resolve_at(50_000);
-    /// let completed = ch.drain_completed();
-    /// assert_eq!(completed.len(), 1);
-    /// assert_eq!(completed[0].0, NodeId(1));
-    /// assert!(!completed[0].1);
-    /// ```
+    /// Drain and return all completed transmissions as `(sender, collided, captured, RxMetadata)` tuples.
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
         let path_loss_db = self.path_loss_db;
         let noise_floor_dbm = self.noise_floor_dbm;

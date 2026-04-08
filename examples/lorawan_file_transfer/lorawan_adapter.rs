@@ -17,6 +17,8 @@ pub struct LoRaWanAdapter {
     id: NodeId,
     device: Device<SimulatedRadio, Xorshift64, BUF_SIZE>,
     fragmenter: FileFragmenter,
+    /// Set when `lorawan-device` returns `Response::TimeoutRequest(ms)`.
+    /// Cleared once the timeout fires, after which we attempt the next fragment.
     pending_timeout_ms: Option<u32>,
     tx_start_time: SimTime,
     joined: bool,
@@ -47,6 +49,10 @@ impl LoRaWanAdapter {
         }
     }
 
+    /// Compute the absolute wake time for a timeout returned by `lorawan-device`.
+    ///
+    /// `lorawan-device` returns `TimeoutRequest(delay_ms)` relative to the start of
+    /// the most recent TX. We convert that to an absolute `SimTime` in microseconds.
     fn wake_from_timeout(&self, ms: u32) -> SimTime {
         self.tx_start_time + ms as u64 * 1_000
     }
@@ -104,7 +110,9 @@ impl NodeHandle for LoRaWanAdapter {
     }
 
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
-        if let Some(_timeout_ms) = self.pending_timeout_ms.take() {
+        if self.pending_timeout_ms.take().is_some() {
+            // A timeout previously requested by lorawan-device has fired.
+            // Deliver TimeoutFired and follow its response.
             match self
                 .device
                 .handle_event(lorawan_device::nb_device::Event::TimeoutFired)
