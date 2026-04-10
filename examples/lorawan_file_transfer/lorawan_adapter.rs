@@ -104,7 +104,7 @@ impl NodeHandle for LoRaWanAdapter {
     }
 
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
-        if let Some(_timeout_ms) = self.pending_timeout_ms.take() {
+        if self.pending_timeout_ms.take().is_some() {
             match self
                 .device
                 .handle_event(lorawan_device::nb_device::Event::TimeoutFired)
