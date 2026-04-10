@@ -20,10 +20,10 @@ fn main() {
     let sim_duration = ms_to_sim_time(SIM_DURATION_MS);
     let mut scheduler = Scheduler::new(sim_duration);
 
-    // Add a passive receiver
+    // Add a passive receiver (NodeId 0).
     scheduler.add_node(Box::new(AlohaReceiver::new(NodeId(0))), None);
 
-    // Add ALOHA sender nodes
+    // Add ALOHA sender nodes.
     for i in 1..=NUM_SENDERS {
         let traffic = PeriodicTraffic::new(
             vec![i as u8; 10], // 10-byte payload tagged with sender id
@@ -49,8 +49,13 @@ fn main() {
 
     let m = &scheduler.metrics;
     let expected_tx = (NUM_SENDERS as u64) * (PACKETS_PER_SENDER as u64);
-    let pdr = if m.total_tx > 0 {
-        m.total_rx as f64 / (m.total_tx as f64 * (NUM_SENDERS as f64))
+
+    // PDR: fraction of transmitted packets successfully received by the receiver
+    // (NodeId 0). Each TX can reach the receiver at most once, so the denominator
+    // is simply the number of expected transmissions.
+    let receiver_rx = m.node_rx_count(NodeId(0)) as f64;
+    let pdr = if expected_tx > 0 {
+        receiver_rx / expected_tx as f64
     } else {
         0.0
     };

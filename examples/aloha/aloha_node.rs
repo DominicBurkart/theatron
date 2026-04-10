@@ -3,6 +3,17 @@ use theatron::time::SimTime;
 use theatron::traits::TrafficModel;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
+// Default LoRa EU868 radio parameters. These are standard values used across
+// all AlohaNode instances. `sf` and `frequency` remain caller-supplied because
+// they are the primary parameters for channel / orthogonality experiments.
+// TODO: consider accepting all RF params via an AlohaConfig struct and
+// implementing the `Protocol` trait (per ARCHITECTURE.md) so that this example
+// demonstrates the idiomatic theatron integration pattern rather than wiring
+// directly to `NodeHandle`.
+const DEFAULT_BANDWIDTH_HZ: u32 = 125_000; // EU868 standard bandwidth
+const DEFAULT_CODING_RATE: u8 = 5; // 4/5 coding rate
+const DEFAULT_TX_POWER_DBM: i8 = 14; // 14 dBm, legal limit for EU868
+
 /// Pure ALOHA node: transmits immediately when a payload is available.
 ///
 /// If the node has no pending data, it re-checks after `poll_interval_us`.
@@ -19,7 +30,6 @@ pub struct AlohaNode {
     coding_rate: u8,
     tx_power_dbm: i8,
     tx_duration_us: u64,
-    received: Vec<RxMetadata>,
 }
 
 impl AlohaNode {
@@ -38,14 +48,18 @@ impl AlohaNode {
             poll_interval_us,
             sf,
             frequency,
-            bandwidth: 125_000,
-            coding_rate: 5,
-            tx_power_dbm: 14,
+            bandwidth: DEFAULT_BANDWIDTH_HZ,
+            coding_rate: DEFAULT_CODING_RATE,
+            tx_power_dbm: DEFAULT_TX_POWER_DBM,
             tx_duration_us,
-            received: Vec::new(),
         }
     }
 
+    /// Returns the next wake time, or `None` if traffic is permanently exhausted.
+    ///
+    /// When all packets have been sent and no new payload will ever be generated,
+    /// returning `None` stops the scheduler from rescheduling this node on the
+    /// poll interval indefinitely.
     fn try_generate_tx(&mut self, time: SimTime) -> Option<SimTime> {
         if self.pending_tx.is_some() {
             return Some(time);
@@ -62,7 +76,20 @@ impl AlohaNode {
             });
             Some(time)
         } else {
-            Some(time + self.poll_interval_us)
+            // Check whether traffic can ever produce another payload. If the
+            // model has a fixed count and it is exhausted, stop scheduling.
+            // We probe one interval ahead; if still None at a future time, we
+            // assume exhaustion — TrafficModel::next_payload is idempotent for
+            // a depleted PeriodicTraffic (remaining == 0 always returns None).
+            let future = time + self.poll_interval_us;
+            if self.traffic.next_payload(future).is_none() {
+                None // traffic permanently exhausted — do not reschedule
+            } else {
+                // Payload will be ready in the future; wake up and check again.
+                // (next_payload consumed the future slot, but PeriodicTraffic
+                //  re-checks time >= next_time, so calling it early is safe.)
+                Some(future)
+            }
         }
     }
 }
@@ -72,8 +99,15 @@ impl NodeHandle for AlohaNode {
         self.id
     }
 
-    fn on_receive(&mut self, frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
-        self.received.push(frame);
+    /// AlohaNode senders do not need to receive frames in the current
+    /// "transmit and forget" model. No ACK mechanism exists yet.
+    ///
+    /// NOTE: if a future implementation adds ACK-based retransmission, this
+    /// method is the hook for detecting delivery confirmation. Backoff
+    /// retransmission on collision also requires a new `on_tx_complete` callback
+    /// in the `NodeHandle` trait (the scheduler currently discards collision
+    /// events without notifying the sender).
+    fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
         None
     }
 
@@ -225,8 +259,9 @@ mod tests {
         // Consume the one payload
         node.update(0);
         node.poll_transmit(0);
-        // Now traffic is exhausted; update should schedule next poll
+        // Traffic is now exhausted (remaining == 0); update should return None
+        // to stop the scheduler from rescheduling this node.
         let wake = node.update(1_000_000);
-        assert_eq!(wake, Some(2_000_000));
+        assert_eq!(wake, None);
     }
 }

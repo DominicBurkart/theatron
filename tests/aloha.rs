@@ -3,6 +3,20 @@ use theatron::time::SimTime;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
 // --- Test helpers ---
+//
+// NOTE: These tests use local `PeriodicSender` / `Receiver` helpers rather than
+// `AlohaNode`/`AlohaReceiver` from `examples/aloha/aloha_node.rs`. This is
+// intentional for now: the example types are compiled only as part of the
+// `aloha` example binary (not as a library), so they cannot be `use`-imported
+// from integration tests without additional crate restructuring.
+//
+// As a result, these tests validate that the *scheduler and channel model*
+// correctly handle ALOHA-like transmission patterns (collision, SF orthogonality,
+// frequency orthogonality, sequential delivery). They do NOT exercise `AlohaNode`
+// end-to-end. Wiring the integration tests to `AlohaNode` is tracked as a
+// follow-up: it requires either moving shared types into the library crate or
+// using `#[path = "../examples/aloha/aloha_node.rs"] mod aloha_node;` (which
+// becomes meaningful once `AlohaNode` has retransmission logic worth testing).
 
 fn make_tx(payload: Vec<u8>, sf: u8, frequency: u32, duration_us: u64) -> Transmission {
     Transmission {
@@ -114,6 +128,9 @@ impl NodeHandle for Receiver {
 // --- Tests ---
 
 /// A single ALOHA sender with no contention should deliver all packets.
+///
+/// Sender fires at t=0, 1s, 2s, 3s, 4s (count=5, interval=1s) — all within
+/// the 20s window, so exactly 5 TXs are expected.
 #[test]
 fn single_sender_all_delivered() {
     let mut sched = Scheduler::new(20_000_000);
