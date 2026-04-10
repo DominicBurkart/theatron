@@ -39,6 +39,7 @@ struct RxMetadata {
     rssi: f32,
     snr: f32,
     sf: u8,
+    frequency: u32,
     time: SimTime,
 }
 
@@ -48,6 +49,8 @@ struct Transmission {
     bandwidth: u32,
     coding_rate: u8,
     frequency: u32,
+    duration_us: u64,
+    tx_power_dbm: i8,
 }
 ```
 
@@ -146,82 +149,54 @@ Responses: `Idle`, `Txing`, `TxDone(ms)`, `Rxing`, `RxDone(RxQuality)`.
 
 The state machine calls `handle_event(TxRequest(...))` to initiate a transmission; the radio responds `Txing`, then on the next `Phy(...)` event responds `TxDone(timestamp_ms)`. For RX: `handle_event(RxRequest(...))` → `Rxing`, then when a frame arrives → `RxDone(quality)`, and the state machine reads bytes via `get_received_packet()`.
 
-#### SimulatedRadio sketch
+#### SimulatedRadio
 
-`SimulatedRadio` maintains an internal receive buffer and an RX-mode flag. theatron's channel pushes received frames into the buffer when the radio is in RX mode; frames arriving when the radio is not listening are dropped (physically correct behavior).
+`SimulatedRadio` maintains an internal receive buffer and tracks the active RX window config. Downlinks are injected via `inject_downlink(data, sf, frequency)`, which only accepts the frame if SF and frequency match the current RX config — dropping frames that arrive when the radio is not listening (physically correct behavior). The `NodeHandle` adapter calls `get_radio().inject_downlink(...)` when a frame is delivered from the channel, then fires `Event::Phy(())` to advance the `lorawan-device` state machine.
 
 ```rust
 struct SimulatedRadio {
-    channel: Arc<Mutex<Channel>>,
-    node_id: NodeId,
     rx_buf: [u8; 256],
     rx_len: usize,
-    mode: RadioMode,
+    pending_tx: Option<Transmission>,
+    pending_downlink: Option<Vec<u8>>,
+    current_rx_config: Option<RfConfig>,
 }
 
-enum RadioMode { Idle, Txing { config: TxConfig }, Rxing { config: RxConfig } }
-
-impl PhyRxTx for SimulatedRadio {
-    type PhyEvent = SimPhyEvent;
-    type PhyError = SimRadioError;
-    type PhyResponse = SimPhyResponse;
-
-    const MAX_RADIO_POWER: u8 = 22;
-
-    fn get_mut_radio(&mut self) -> &mut Self { self }
-
-    fn get_received_packet(&mut self) -> &mut [u8] {
-        &mut self.rx_buf[..self.rx_len]
-    }
-
-    fn handle_event(
-        &mut self,
-        event: radio::Event<'_, Self>,
-    ) -> Result<radio::Response<Self>, Self::PhyError> {
-        match event {
-            radio::Event::TxRequest(config, buf) => {
-                self.mode = RadioMode::Txing { config };
-                self.channel.lock().unwrap().enqueue_tx(self.node_id, config, buf);
-                Ok(radio::Response::Txing)
-            }
-            radio::Event::RxRequest(config) => {
-                self.mode = RadioMode::Rxing { config };
-                Ok(radio::Response::Rxing)
-            }
-            radio::Event::CancelRx => {
-                self.mode = RadioMode::Idle;
-                Ok(radio::Response::Idle)
-            }
-            radio::Event::Phy(SimPhyEvent::TxDone { timestamp_ms }) => {
-                self.mode = RadioMode::Idle;
-                Ok(radio::Response::TxDone(timestamp_ms))
-            }
-            radio::Event::Phy(SimPhyEvent::RxDone { quality, payload }) => {
-                self.rx_len = payload.len().min(self.rx_buf.len());
-                self.rx_buf[..self.rx_len].copy_from_slice(&payload[..self.rx_len]);
-                self.mode = RadioMode::Idle;
-                Ok(radio::Response::RxDone(quality))
-            }
+impl SimulatedRadio {
+    /// Inject a downlink frame if the radio is in RX mode and SF/frequency match.
+    /// Returns true if the frame was accepted.
+    pub fn inject_downlink(&mut self, data: Vec<u8>, sf: u8, frequency: u32) -> bool {
+        let Some(rx_config) = &self.current_rx_config else { return false; };
+        if rx_config.bb.sf.factor() as u8 != sf || rx_config.frequency != frequency {
+            return false;
         }
+        let len = data.len().min(self.rx_buf.len());
+        self.rx_buf[..len].copy_from_slice(&data[..len]);
+        self.rx_len = len;
+        self.pending_downlink = Some(data);
+        true
     }
 }
 ```
 
-The `lorawan-device` state machine calls `handle_event` on `SimulatedRadio`; theatron's scheduler delivers simulated radio events (TX completion, RX frame arrival) by calling `device.handle_event(Event::RadioEvent(phy_event))` on the adapter state.
+The `lorawan-device` state machine calls `handle_event` on `SimulatedRadio`. TX completions are handled synchronously: `TxRequest` stores a `Transmission` in `pending_tx` and immediately responds `TxDone(0)`. The adapter's `poll_transmit` drains `pending_tx` to pass it to the channel.
 
 #### Adapter state ownership
 
-`lorawan-device::nb_device::Device<R, RNG, N, D>` bundles the radio, RNG, and MAC state into a single struct. The adapter's `Protocol::State` wraps it along with bookkeeping theatron needs:
+`lorawan-device::nb_device::Device<R, RNG, N>` bundles the radio, RNG, and MAC state into a single struct. The `LoRaWanAdapter` wraps it alongside the bookkeeping theatron needs:
 
 ```rust
-struct LorawanState {
-    device: nb_device::Device<SimulatedRadio, Prng, 256, 1>,
-    pending_tx: Option<Transmission>,
-    next_wake: Option<SimTime>,
+struct LoRaWanAdapter {
+    id: NodeId,
+    device: Device<SimulatedRadio, Xorshift64, BUF_SIZE>,
+    fragmenter: FileFragmenter,
+    pending_timeout_ms: Option<u32>,  // pending lorawan-device timeout
+    tx_start_time: SimTime,           // time of the most recent TX, for timeout math
+    joined: bool,
 }
 ```
 
-`pending_tx` is populated when the device issues a `TxRequest` through `SimulatedRadio::handle_event`. `next_wake` is updated from `nb_device::Response::TimeoutRequest(ms)` and returned from the adapter's `Protocol` methods as `Option<SimTime>`. Since `device` is inside `&mut LorawanState`, mutable access flows correctly through all `Protocol` method signatures.
+`pending_timeout_ms` is set when `lorawan-device` returns `Response::TimeoutRequest(ms)`. The adapter converts it to a `SimTime` via `tx_start_time + ms * 1_000` and returns it from `update` / `on_receive`. The scheduler fires a `Wake` event at that time, which the adapter maps to `Event::TimeoutFired` for `lorawan-device`.
 
 #### Timer contract
 
@@ -252,6 +227,7 @@ Interference sources are first-class simulation participants. They observe the c
 trait InterferenceSource {
     fn observe(&mut self, event: &ChannelEvent, time: SimTime);
     fn poll_inject(&mut self, time: SimTime) -> Option<Transmission>;
+    fn next_poll_time(&self, current_time: SimTime) -> Option<SimTime>;
 }
 ```
 

@@ -261,7 +261,7 @@ impl Scheduler {
                         self.handle_poll_transmit(idx, event.time);
                     }
                 }
-                EventKind::TxComplete { sender: _ } => {
+                EventKind::TxComplete { .. } => {
                     let completed_events = self.channel.resolve_at(event.time);
                     for ch_event in &completed_events {
                         for interferer in &mut self.interferers {
