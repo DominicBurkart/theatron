@@ -716,6 +716,69 @@ mod tests {
         assert_eq!(sched.metrics.total_rx, 0, "collision prevents delivery");
     }
 
+    #[test]
+    fn current_time_advances_to_tx_end() {
+        // The scheduler must advance current_time to the TxComplete event
+        // time (= tx start + duration), not just to the initial wake.
+        let duration_us = 75_000u64;
+        let wake_at = 10_000u64;
+        let mut sched = Scheduler::new(200_000);
+        let mut node = SimpleNode::new(1);
+        node.queue_tx(make_tx(7, 868_100_000, duration_us));
+        sched.add_node(Box::new(node), Some(wake_at));
+        sched.run();
+        // After the TX completes the scheduler must have processed the
+        // TxComplete event at wake_at + duration_us.
+        assert_eq!(
+            sched.current_time(),
+            wake_at + duration_us,
+            "current_time must reach the TX completion point"
+        );
+    }
+
+    #[test]
+    fn total_rx_equals_sum_of_per_node_counts() {
+        // Invariant: metrics.total_rx == sum of node_rx_count for every node
+        // that received at least one frame.
+        let mut sched = Scheduler::new(200_000);
+        let mut sender = SimpleNode::new(1);
+        sender.queue_tx(make_tx(7, 868_100_000, 50_000));
+        sched.add_node(Box::new(sender), Some(0));
+        sched.add_node(Box::new(SimpleNode::new(2)), None);
+        sched.add_node(Box::new(SimpleNode::new(3)), None);
+        sched.add_node(Box::new(SimpleNode::new(4)), None);
+        sched.run();
+
+        let per_node_sum: u64 = [1u32, 2, 3, 4]
+            .iter()
+            .map(|&id| sched.metrics.node_rx_count(NodeId(id)))
+            .sum();
+        assert_eq!(
+            sched.metrics.total_rx, per_node_sum,
+            "total_rx must equal the sum of all per-node rx counts"
+        );
+    }
+
+    #[test]
+    fn total_tx_equals_sum_of_per_node_counts() {
+        // Invariant: metrics.total_tx == sum of node_tx_count for every node.
+        let mut sched = Scheduler::new(200_000);
+        for i in 1u32..=3 {
+            let mut node = SimpleNode::new(i);
+            node.queue_tx(make_tx(7, 868_100_000 + i as u32 * 200_000, 50_000));
+            sched.add_node(Box::new(node), Some(0));
+        }
+        sched.run();
+
+        let per_node_sum: u64 = (1u32..=3)
+            .map(|id| sched.metrics.node_tx_count(NodeId(id)))
+            .sum();
+        assert_eq!(
+            sched.metrics.total_tx, per_node_sum,
+            "total_tx must equal the sum of all per-node tx counts"
+        );
+    }
+
     proptest! {
         #[test]
         fn n_receivers_all_get_broadcast(n in 2usize..20) {
@@ -729,6 +792,25 @@ mod tests {
             sched.run();
             prop_assert_eq!(sched.metrics.total_tx, 1u64);
             prop_assert_eq!(sched.metrics.total_rx, n as u64);
+        }
+
+        #[test]
+        fn total_rx_never_exceeds_tx_times_receivers(n_receivers in 1usize..10) {
+            // With one sender and n receivers, total_rx <= total_tx * n_receivers.
+            // (Equality holds when there are no collisions.)
+            let mut sched = Scheduler::new(200_000);
+            let mut sender = SimpleNode::new(0);
+            sender.queue_tx(make_tx(7, 868_100_000, 50_000));
+            sched.add_node(Box::new(sender), Some(0));
+            for i in 1..=n_receivers {
+                sched.add_node(Box::new(SimpleNode::new(i as u32)), None);
+            }
+            sched.run();
+            prop_assert!(
+                sched.metrics.total_rx <= sched.metrics.total_tx * n_receivers as u64,
+                "total_rx={} must be <= total_tx={} * n_receivers={}",
+                sched.metrics.total_rx, sched.metrics.total_tx, n_receivers
+            );
         }
     }
 }
