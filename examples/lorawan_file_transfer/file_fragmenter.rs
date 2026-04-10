@@ -71,4 +71,40 @@ mod tests {
         assert_eq!(f.next_payload(500), None);
         assert_eq!(f.next_payload(1_000), Some(vec![3, 4]));
     }
+
+    #[test]
+    fn is_done_false_initially_true_after_exhaustion() {
+        let data = vec![1u8, 2, 3];
+        let mut f = FileFragmenter::new(data, 10, 0);
+        assert!(
+            !f.is_done(),
+            "should not be done before any payload is taken"
+        );
+        f.next_payload(0);
+        assert!(f.is_done(), "should be done after all data is consumed");
+    }
+
+    #[test]
+    fn empty_data_is_immediately_done() {
+        let f = FileFragmenter::new(vec![], 4, 0);
+        assert!(f.is_done());
+    }
+
+    #[test]
+    fn next_available_time_none_when_done() {
+        let mut f = FileFragmenter::new(vec![1u8], 10, 0);
+        f.next_payload(0);
+        assert!(f.next_available_time(0).is_none());
+        assert!(f.next_available_time(1_000_000).is_none());
+    }
+
+    #[test]
+    fn next_available_time_returns_future_when_interval_not_elapsed() {
+        let data = vec![1u8, 2, 3, 4];
+        let mut f = FileFragmenter::new(data, 2, 5_000);
+        f.next_payload(0); // next_send = 5_000
+        assert_eq!(f.next_available_time(0), Some(5_000));
+        assert_eq!(f.next_available_time(4_999), Some(5_000));
+        assert_eq!(f.next_available_time(5_000), Some(5_000));
+    }
 }

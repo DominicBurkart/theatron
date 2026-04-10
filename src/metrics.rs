@@ -73,6 +73,16 @@ impl MetricsCollector {
         self.total_collisions += 1;
     }
 
+    /// Record a capture event (a stronger signal overpowering a weaker one).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::metrics::MetricsCollector;
+    /// let mut m = MetricsCollector::new();
+    /// m.record_capture();
+    /// assert_eq!(m.total_captures, 1);
+    /// ```
     pub fn record_capture(&mut self) {
         self.total_captures += 1;
     }

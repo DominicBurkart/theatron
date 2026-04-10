@@ -175,8 +175,36 @@ mod tests {
     #[test]
     fn inject_downlink_populates_rx_buf() {
         let mut radio = SimulatedRadio::new();
-        radio.inject_downlink(vec![0x01, 0x02, 0x03]);
+        // Must set up an active RX config before inject_downlink will accept data.
+        let rf = make_rf();
+        let sf = rf.bb.sf.factor() as u8;
+        let freq = rf.frequency;
+        radio.handle_event(Event::RxRequest(rf)).unwrap();
+        let accepted = radio.inject_downlink(vec![0x01, 0x02, 0x03], sf, freq);
+        assert!(
+            accepted,
+            "inject_downlink should succeed when RX config matches"
+        );
         assert_eq!(radio.get_received_packet(), &[0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn inject_downlink_rejected_without_rx_config() {
+        let mut radio = SimulatedRadio::new();
+        let accepted = radio.inject_downlink(vec![0xAB], 7, 868_100_000);
+        assert!(
+            !accepted,
+            "inject_downlink must return false when not in RX mode"
+        );
+    }
+
+    #[test]
+    fn inject_downlink_rejected_on_sf_mismatch() {
+        let mut radio = SimulatedRadio::new();
+        radio.handle_event(Event::RxRequest(make_rf())).unwrap();
+        // make_rf uses SF7; inject with SF8 should be rejected.
+        let accepted = radio.inject_downlink(vec![0xAB], 8, 868_100_000);
+        assert!(!accepted, "inject_downlink must reject mismatched SF");
     }
 
     #[test]
@@ -207,7 +235,12 @@ mod tests {
     #[test]
     fn phy_with_downlink_returns_rx_done() {
         let mut radio = SimulatedRadio::new();
-        radio.inject_downlink(vec![0xAB]);
+        let rf = make_rf();
+        let sf = rf.bb.sf.factor() as u8;
+        let freq = rf.frequency;
+        radio.handle_event(Event::RxRequest(rf)).unwrap();
+        let accepted = radio.inject_downlink(vec![0xAB], sf, freq);
+        assert!(accepted);
         let result = radio.handle_event(Event::Phy(()));
         assert!(matches!(result, Ok(Response::RxDone(_))));
     }
@@ -222,7 +255,7 @@ mod tests {
     #[test]
     fn timings_values() {
         let radio = SimulatedRadio::new();
-        assert_eq!(radio.get_rx_window_offset_ms(), 0);
-        assert_eq!(radio.get_rx_window_duration_ms(), 100);
+        assert_eq!(radio.get_rx_window_offset_ms(), RX_WINDOW_OFFSET_MS);
+        assert_eq!(radio.get_rx_window_duration_ms(), RX_WINDOW_DURATION_MS);
     }
 }
