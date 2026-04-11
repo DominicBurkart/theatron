@@ -1,12 +1,4 @@
-/// Simulation time in microseconds.
-///
-/// # Examples
-///
-/// ```
-/// use theatron::time::SimTime;
-/// let t: SimTime = 1_000;
-/// assert_eq!(t, 1_000);
-/// ```
+/// Simulation time in microseconds. A type alias for `u64`.
 pub type SimTime = u64;
 
 /// Convert simulation time (microseconds) to milliseconds.

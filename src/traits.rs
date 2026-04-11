@@ -7,6 +7,7 @@ use crate::types::{ChannelEvent, RxMetadata, Transmission};
 ///
 /// ```
 /// use theatron::traits::Protocol;
+/// use theatron::time::SimTime;
 /// use theatron::types::{RxMetadata, Transmission};
 ///
 /// struct NoOp;
@@ -16,10 +17,10 @@ use crate::types::{ChannelEvent, RxMetadata, Transmission};
 ///     type State = ();
 ///     type Metrics = ();
 ///
-///     fn init(&self, _config: ()) -> ((), Option<u64>) { ((), None) }
-///     fn on_receive(&self, _state: &mut (), _frame: RxMetadata, _time: u64) -> Option<u64> { None }
-///     fn poll_transmit(&self, _state: &mut (), _time: u64) -> Option<Transmission> { None }
-///     fn update(&self, _state: &mut (), _time: u64) -> Option<u64> { None }
+///     fn init(&self, _config: ()) -> ((), Option<SimTime>) { ((), None) }
+///     fn on_receive(&self, _state: &mut (), _frame: RxMetadata, _time: SimTime) -> Option<SimTime> { None }
+///     fn poll_transmit(&self, _state: &mut (), _time: SimTime) -> Option<Transmission> { None }
+///     fn update(&self, _state: &mut (), _time: SimTime) -> Option<SimTime> { None }
 ///     fn metrics(&self, _state: &()) {}
 /// }
 ///
@@ -50,11 +51,12 @@ pub trait Protocol {
 ///
 /// ```
 /// use theatron::traits::TrafficModel;
+/// use theatron::time::SimTime;
 ///
 /// struct FixedPayload(Option<Vec<u8>>);
 ///
 /// impl TrafficModel for FixedPayload {
-///     fn next_payload(&mut self, _time: u64) -> Option<Vec<u8>> {
+///     fn next_payload(&mut self, _time: SimTime) -> Option<Vec<u8>> {
 ///         self.0.take()
 ///     }
 /// }
@@ -73,14 +75,15 @@ pub trait TrafficModel {
 ///
 /// ```
 /// use theatron::traits::InterferenceSource;
+/// use theatron::time::SimTime;
 /// use theatron::types::{ChannelEvent, Transmission};
 ///
 /// struct NullInterferer;
 ///
 /// impl InterferenceSource for NullInterferer {
-///     fn observe(&mut self, _event: &ChannelEvent, _time: u64) {}
-///     fn poll_inject(&mut self, _time: u64) -> Option<Transmission> { None }
-///     fn next_poll_time(&self, _current_time: u64) -> Option<u64> { None }
+///     fn observe(&mut self, _event: &ChannelEvent, _time: SimTime) {}
+///     fn poll_inject(&mut self, _time: SimTime) -> Option<Transmission> { None }
+///     fn next_poll_time(&self, _current_time: SimTime) -> Option<SimTime> { None }
 /// }
 ///
 /// let mut ni = NullInterferer;

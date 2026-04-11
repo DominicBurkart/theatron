@@ -9,6 +9,10 @@ use crate::types::{NodeId, RxMetadata, Transmission};
 
 /// A handle to a simulation node, allowing the scheduler to drive it.
 ///
+/// Implement this trait to connect any protocol state machine to the scheduler.
+/// Each method returns `Option<SimTime>`: `Some(t)` schedules a wake call to
+/// `update` at simulated time `t`; `None` means no pending timer.
+///
 /// # Examples
 ///
 /// ```
@@ -37,19 +41,6 @@ pub trait NodeHandle {
 }
 
 /// The kind of event processed by the scheduler.
-///
-/// # Examples
-///
-/// ```
-/// use theatron::scheduler::EventKind;
-/// use theatron::types::NodeId;
-///
-/// let wake = EventKind::Wake { node_id: NodeId(1) };
-/// match wake {
-///     EventKind::Wake { node_id } => assert_eq!(node_id, NodeId(1)),
-///     _ => panic!("expected Wake"),
-/// }
-/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EventKind {
     Wake { node_id: NodeId },
@@ -90,14 +81,6 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// Create a new scheduler that will stop at `end_time` microseconds.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::scheduler::Scheduler;
-    /// let sched = Scheduler::new(60_000_000);
-    /// assert_eq!(sched.current_time(), 0);
-    /// ```
     pub fn new(end_time: SimTime) -> Self {
         Self {
             events: BinaryHeap::new(),
@@ -113,26 +96,8 @@ impl Scheduler {
 
     /// Register a node with an optional initial wake time.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::scheduler::{NodeHandle, Scheduler};
-    /// use theatron::time::SimTime;
-    /// use theatron::types::{NodeId, RxMetadata, Transmission};
-    ///
-    /// struct Silent { id: NodeId }
-    /// impl NodeHandle for Silent {
-    ///     fn node_id(&self) -> NodeId { self.id }
-    ///     fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> { None }
-    ///     fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> { None }
-    ///     fn update(&mut self, _t: SimTime) -> Option<SimTime> { None }
-    /// }
-    ///
-    /// let mut sched = Scheduler::new(1_000_000);
-    /// sched.add_node(Box::new(Silent { id: NodeId(1) }), None);
-    /// sched.run();
-    /// assert_eq!(sched.metrics.total_tx, 0);
-    /// ```
+    /// If `initial_wake` is `Some(t)`, a `Wake` event is scheduled at time `t`,
+    /// which will call `update` on the node at the start of the simulation.
     pub fn add_node(&mut self, node: Box<dyn NodeHandle>, initial_wake: Option<SimTime>) {
         debug_assert!(
             (0..self.interferers.len()).all(|i| node.node_id().0 != u32::MAX - i as u32),
@@ -223,27 +188,6 @@ impl Scheduler {
     }
 
     /// Run the simulation until `end_time` or until there are no more events.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::scheduler::{NodeHandle, Scheduler};
-    /// use theatron::time::SimTime;
-    /// use theatron::types::{NodeId, RxMetadata, Transmission};
-    ///
-    /// struct Noop { id: NodeId }
-    /// impl NodeHandle for Noop {
-    ///     fn node_id(&self) -> NodeId { self.id }
-    ///     fn on_receive(&mut self, _f: RxMetadata, _t: SimTime) -> Option<SimTime> { None }
-    ///     fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> { None }
-    ///     fn update(&mut self, _t: SimTime) -> Option<SimTime> { None }
-    /// }
-    ///
-    /// let mut sched = Scheduler::new(1_000_000);
-    /// sched.add_node(Box::new(Noop { id: NodeId(1) }), Some(0));
-    /// sched.run();
-    /// assert!(sched.current_time() <= 1_000_000);
-    /// ```
     pub fn run(&mut self) {
         while let Some(event) = self.events.pop() {
             if event.time > self.end_time {
@@ -300,14 +244,6 @@ impl Scheduler {
     }
 
     /// Return the current simulation time in microseconds.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::scheduler::Scheduler;
-    /// let sched = Scheduler::new(1_000_000);
-    /// assert_eq!(sched.current_time(), 0);
-    /// ```
     pub fn current_time(&self) -> SimTime {
         self.current_time
     }

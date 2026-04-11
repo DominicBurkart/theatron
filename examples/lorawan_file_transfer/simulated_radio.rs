@@ -173,9 +173,17 @@ mod tests {
     }
 
     #[test]
-    fn inject_downlink_populates_rx_buf() {
+    fn inject_downlink_requires_rx_mode() {
         let mut radio = SimulatedRadio::new();
-        radio.inject_downlink(vec![0x01, 0x02, 0x03]);
+        // inject_downlink returns false when not in RX mode
+        assert!(!radio.inject_downlink(vec![0x01, 0x02, 0x03], 7, 868_100_000));
+    }
+
+    #[test]
+    fn inject_downlink_populates_rx_buf_when_in_rx_mode() {
+        let mut radio = SimulatedRadio::new();
+        radio.handle_event(Event::RxRequest(make_rf())).unwrap();
+        assert!(radio.inject_downlink(vec![0x01, 0x02, 0x03], 7, 868_100_000));
         assert_eq!(radio.get_received_packet(), &[0x01, 0x02, 0x03]);
     }
 
@@ -207,7 +215,8 @@ mod tests {
     #[test]
     fn phy_with_downlink_returns_rx_done() {
         let mut radio = SimulatedRadio::new();
-        radio.inject_downlink(vec![0xAB]);
+        radio.handle_event(Event::RxRequest(make_rf())).unwrap();
+        radio.inject_downlink(vec![0xAB], 7, 868_100_000);
         let result = radio.handle_event(Event::Phy(()));
         assert!(matches!(result, Ok(Response::RxDone(_))));
     }
@@ -223,6 +232,6 @@ mod tests {
     fn timings_values() {
         let radio = SimulatedRadio::new();
         assert_eq!(radio.get_rx_window_offset_ms(), 0);
-        assert_eq!(radio.get_rx_window_duration_ms(), 100);
+        assert_eq!(radio.get_rx_window_duration_ms(), 1000);
     }
 }

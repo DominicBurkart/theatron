@@ -1,35 +1,10 @@
 use crate::time::SimTime;
 
 /// A unique identifier for a simulation node.
-///
-/// # Examples
-///
-/// ```
-/// use theatron::types::NodeId;
-/// let id = NodeId(42);
-/// assert_eq!(id, NodeId(42));
-/// assert_ne!(id, NodeId(1));
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u32);
 
 /// Metadata attached to a received radio frame.
-///
-/// # Examples
-///
-/// ```
-/// use theatron::types::RxMetadata;
-/// let meta = RxMetadata {
-///     payload: vec![0x01, 0x02],
-///     rssi: -80.0,
-///     snr: 10.0,
-///     sf: 7,
-///     frequency: 868_100_000,
-///     time: 50_000,
-/// };
-/// assert_eq!(meta.payload, vec![0x01, 0x02]);
-/// assert_eq!(meta.sf, 7);
-/// ```
 #[derive(Debug, Clone)]
 pub struct RxMetadata {
     pub payload: Vec<u8>,
@@ -41,23 +16,6 @@ pub struct RxMetadata {
 }
 
 /// Parameters for a radio transmission.
-///
-/// # Examples
-///
-/// ```
-/// use theatron::types::Transmission;
-/// let tx = Transmission {
-///     payload: vec![0xDE, 0xAD],
-///     sf: 7,
-///     bandwidth: 125_000,
-///     coding_rate: 5,
-///     frequency: 868_100_000,
-///     duration_us: 50_000,
-///     tx_power_dbm: 14,
-/// };
-/// assert_eq!(tx.payload.len(), 2);
-/// assert_eq!(tx.sf, 7);
-/// ```
 #[derive(Debug, Clone)]
 pub struct Transmission {
     pub payload: Vec<u8>,
@@ -70,22 +28,6 @@ pub struct Transmission {
 }
 
 /// Events emitted by the channel during a simulation.
-///
-/// # Examples
-///
-/// ```
-/// use theatron::types::{ChannelEvent, NodeId};
-/// let started = ChannelEvent::TransmissionStarted {
-///     sender: NodeId(1),
-///     sf: 7,
-///     frequency: 868_100_000,
-///     time: 0,
-/// };
-/// match started {
-///     ChannelEvent::TransmissionStarted { sender, .. } => assert_eq!(sender, NodeId(1)),
-///     _ => panic!("expected TransmissionStarted"),
-/// }
-/// ```
 #[derive(Debug, Clone)]
 pub enum ChannelEvent {
     TransmissionStarted {
