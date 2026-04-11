@@ -30,6 +30,24 @@ fn make_tx(payload: Vec<u8>, sf: u8, frequency: u32, duration_us: u64) -> Transm
     }
 }
 
+fn make_tx_power(
+    payload: Vec<u8>,
+    sf: u8,
+    frequency: u32,
+    duration_us: u64,
+    tx_power_dbm: i8,
+) -> Transmission {
+    Transmission {
+        payload,
+        sf,
+        bandwidth: 125_000,
+        coding_rate: 5,
+        frequency,
+        duration_us,
+        tx_power_dbm,
+    }
+}
+
 /// A node that transmits a fixed number of packets at regular intervals.
 struct PeriodicSender {
     id: NodeId,
@@ -88,6 +106,62 @@ impl NodeHandle for PeriodicSender {
         } else {
             None
         }
+    }
+}
+
+/// A sender with a configurable transmit power (dBm), used to test signal
+/// capture: when two nodes transmit simultaneously on the same SF/frequency
+/// and the power difference meets the co-channel rejection threshold (6 dB by
+/// default), the stronger signal is "captured" and delivered while the weaker
+/// one is marked collided.
+struct PoweredSender {
+    id: NodeId,
+    sf: u8,
+    frequency: u32,
+    duration_us: u64,
+    tx_power_dbm: i8,
+    fired: bool,
+}
+
+impl PoweredSender {
+    fn new(id: u32, sf: u8, frequency: u32, duration_us: u64, tx_power_dbm: i8) -> Self {
+        Self {
+            id: NodeId(id),
+            sf,
+            frequency,
+            duration_us,
+            tx_power_dbm,
+            fired: false,
+        }
+    }
+}
+
+impl NodeHandle for PoweredSender {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+
+    fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
+        None
+    }
+
+    fn poll_transmit(&mut self, _time: SimTime) -> Option<Transmission> {
+        if !self.fired {
+            self.fired = true;
+            Some(make_tx_power(
+                vec![self.id.0 as u8; 4],
+                self.sf,
+                self.frequency,
+                self.duration_us,
+                self.tx_power_dbm,
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn update(&mut self, _time: SimTime) -> Option<SimTime> {
+        None
     }
 }
 
@@ -233,4 +307,29 @@ fn five_simultaneous_senders_high_collision_rate() {
     );
     // With 5 equal-power simultaneous TXs, all collide → zero deliveries
     assert_eq!(sched.metrics.total_rx, 0);
+}
+
+/// When two nodes transmit simultaneously on the same SF/frequency but one is
+/// at least 6 dB stronger (the default co-channel rejection threshold), the
+/// stronger signal is captured and delivered while the weaker one is lost.
+/// This exercises the `metrics.record_capture()` path in the scheduler.
+#[test]
+fn capture_effect_recorded_in_metrics() {
+    let mut sched = Scheduler::new(1_000_000);
+    // strong: 20 dBm, weak: 14 dBm → delta = 6 dB == threshold → capture
+    let strong = PoweredSender::new(1, 7, 868_100_000, 200_000, 20);
+    let weak = PoweredSender::new(2, 7, 868_100_000, 200_000, 14);
+    let receiver = Receiver::new(99);
+    sched.add_node(Box::new(strong), Some(0));
+    sched.add_node(Box::new(weak), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+    assert_eq!(sched.metrics.total_tx, 2);
+    // The strong signal is captured: one frame delivered, one collision
+    assert_eq!(sched.metrics.total_captures, 1, "expected one capture event");
+    assert_eq!(
+        sched.metrics.total_collisions, 1,
+        "weak sender should be marked collided"
+    );
+    assert_eq!(sched.metrics.total_rx, 1, "only the captured frame is received");
 }
