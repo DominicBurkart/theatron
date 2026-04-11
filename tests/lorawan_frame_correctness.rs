@@ -8,6 +8,9 @@ use rand_core::{Error, RngCore, impls};
 
 use theatron::types::Transmission;
 
+// Xorshift64 is duplicated from examples/lorawan_file_transfer/prng.rs.
+// Integration tests cannot reference example code directly, so this copy
+// is intentional.
 struct Xorshift64(u64);
 
 impl Xorshift64 {
