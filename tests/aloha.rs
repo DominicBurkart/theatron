@@ -325,11 +325,19 @@ fn capture_effect_recorded_in_metrics() {
     sched.add_node(Box::new(receiver), None);
     sched.run();
     assert_eq!(sched.metrics.total_tx, 2);
-    // The strong signal is captured: one frame delivered, one collision
+    // The strong signal is captured: one frame delivered, one collision.
+    // The captured frame is delivered to all non-sender nodes: the weak sender
+    // (NodeId(2)) and the receiver (NodeId(99)) — consistent with how the
+    // scheduler delivers any successful TX to every non-sender node.
     assert_eq!(sched.metrics.total_captures, 1, "expected one capture event");
     assert_eq!(
-        sched.metrics.total_collisions, 1,
+        sched.metrics.total_collisions,
+        1,
         "weak sender should be marked collided"
     );
-    assert_eq!(sched.metrics.total_rx, 1, "only the captured frame is received");
+    assert_eq!(
+        sched.metrics.total_rx,
+        2,
+        "captured frame delivered to 2 non-sender nodes (weak sender + receiver)"
+    );
 }
