@@ -235,7 +235,10 @@ fn channel_resolve_filters_by_time() {
 
 #[test]
 fn channel_late_strong_captures_earlier_weak() {
-    // Weak signal starts first, then a strong signal arrives and captures it
+    // Weak signal starts first, then a strong signal arrives and captures it.
+    // resolve_at uses end <= time (inclusive), so both TXs resolve at t=80_000:
+    //   weak TX: start=0, dur=80_000 -> ends at 80_000 (included)
+    //   strong TX: start=10_000, dur=60_000 -> ends at 70_000 (included)
     let mut ch = Channel::new();
     let weak = tx(7, 868_100_000, 80_000, 8);
     let strong = tx(7, 868_100_000, 60_000, 20);
@@ -321,17 +324,20 @@ proptest! {
         ch.begin_transmission(NodeId(2), &tx(7, 868_100_000, 50_000, weak_power), 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        // Strong should survive, weak should not
+        // Strong signal (NodeId(1)) should survive; weak signal (NodeId(2)) should not.
         let survivors: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         prop_assert_eq!(survivors.len(), 1);
+        // Verify the survivor is the strong sender by both NodeId and RSSI.
+        prop_assert_eq!(survivors[0].0, NodeId(1));
         prop_assert_eq!(survivors[0].3.rssi, ch.compute_rssi(strong_power));
     }
 
     #[test]
-    fn resolve_at_before_end_returns_nothing(start in 0u64..1_000_000, dur in 1u64..1_000_000) {
+    fn resolve_at_before_end_returns_nothing(start in 0u64..1_000_000, dur in 2u64..1_000_000) {
         let mut ch = Channel::new();
         ch.begin_transmission(NodeId(1), &tx(7, 868_100_000, dur, 14), start);
-        // Resolve before transmission ends
+        // Resolve at the midpoint, which is strictly before the transmission ends.
+        // dur >= 2 ensures dur/2 >= 1, so midpoint is always strictly less than start+dur.
         let midpoint = start + dur / 2;
         let events = ch.resolve_at(midpoint);
         prop_assert!(events.is_empty());
@@ -489,6 +495,7 @@ proptest! {
         sched.add_node(Box::new(n1), Some(0));
         sched.add_node(Box::new(n2), Some(0));
         sched.run();
+        prop_assert_eq!(sched.metrics.total_collisions, 0);
         prop_assert_eq!(sched.metrics.total_airtime_us, dur1 + dur2);
     }
 }
