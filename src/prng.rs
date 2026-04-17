@@ -92,6 +92,17 @@ mod tests {
         assert_eq!(buf_a, buf_b);
     }
 
+    /// Pins the exact output sequence for seed 1 against the (<<13, >>7, <<17) triplet.
+    /// Any accidental change to the shift constants will break this test, protecting
+    /// the reproducibility guarantee for saved simulation seeds.
+    #[test]
+    fn known_sequence() {
+        let mut rng = Xorshift64::new(1);
+        assert_eq!(rng.next_u64(), 1_082_269_761);
+        assert_eq!(rng.next_u64(), 1_152_992_998_833_853_505);
+        assert_eq!(rng.next_u64(), 11_177_516_664_432_764_457);
+    }
+
     proptest! {
         #[test]
         fn nonzero_seed_produces_nonzero_first(seed in 1u64..u64::MAX) {
