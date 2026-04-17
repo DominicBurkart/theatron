@@ -216,33 +216,31 @@ impl Scheduler {
 
     fn deliver_completed_to_nodes(&mut self, time: SimTime) {
         let completed: Vec<CompletedTx> = self.channel.drain_completed();
-        for (sender, collided, captured, frame) in completed {
-            if collided {
+        for completed_tx in completed {
+            if completed_tx.collided {
                 self.metrics.record_collision();
             } else {
-                if captured {
+                if completed_tx.captured {
                     self.metrics.record_capture();
                 }
+                // Collect indices of non-sender nodes once for both
+                // on_receive delivery and poll_transmit.
+                let receiver_idxs: Vec<usize> = (0..self.nodes.len())
+                    .filter(|&i| self.nodes[i].node_id() != completed_tx.sender)
+                    .collect();
+
                 let mut wakes = Vec::new();
-                for i in 0..self.nodes.len() {
-                    if self.nodes[i].node_id() != sender {
-                        let next = self.nodes[i].on_receive(frame.clone(), time);
-                        self.metrics.record_rx(self.nodes[i].node_id());
-                        if let Some(t) = next {
-                            wakes.push((self.nodes[i].node_id(), t));
-                        }
+                for &i in &receiver_idxs {
+                    let next = self.nodes[i].on_receive(completed_tx.frame.clone(), time);
+                    self.metrics.record_rx(self.nodes[i].node_id());
+                    if let Some(t) = next {
+                        wakes.push((self.nodes[i].node_id(), t));
                     }
                 }
                 for (node_id, t) in wakes {
                     self.schedule(t, EventKind::Wake { node_id });
                 }
-                let mut tx_node_idxs = Vec::new();
-                for i in 0..self.nodes.len() {
-                    if self.nodes[i].node_id() != sender {
-                        tx_node_idxs.push(i);
-                    }
-                }
-                for i in tx_node_idxs {
+                for i in receiver_idxs {
                     self.handle_poll_transmit(i, time);
                 }
             }
