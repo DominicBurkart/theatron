@@ -3,6 +3,82 @@ use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 
 pub type CompletedTx = (NodeId, bool, bool, RxMetadata);
 
+/// Default LoRa path loss in dB (free-space + typical indoor attenuation baseline).
+pub const LORA_PATH_LOSS_DB: f32 = 100.0;
+
+/// Default LoRa noise floor in dBm (LoRa sensitivity at SF7/125 kHz).
+pub const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
+
+/// Default co-channel rejection threshold in dB (LoRa capture effect threshold).
+pub const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
+
+/// Configuration for physical-layer channel parameters.
+///
+/// Construct with [`ChannelConfig::lora_defaults()`] for LoRa or supply
+/// custom values for other protocols.
+///
+/// # Examples
+///
+/// ```
+/// use theatron::channel::ChannelConfig;
+///
+/// // LoRa defaults
+/// let cfg = ChannelConfig::lora_defaults();
+///
+/// // Custom 802.15.4 / Zigbee-like parameters
+/// let cfg = ChannelConfig {
+///     path_loss_db: 80.0,
+///     noise_floor_dbm: -100.0,
+///     co_channel_rejection_db: 3.0,
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelConfig {
+    /// Path loss applied to every transmission (dB). Higher values mean
+    /// the received signal is weaker.
+    pub path_loss_db: f32,
+
+    /// Noise floor of the receiver (dBm). Used to compute SNR.
+    pub noise_floor_dbm: f32,
+
+    /// Minimum power difference (dB) required for the stronger signal to
+    /// survive a co-channel collision via the capture effect.
+    pub co_channel_rejection_db: f32,
+}
+
+impl ChannelConfig {
+    /// Return the LoRa default parameters used by [`Channel::new()`].
+    ///
+    /// | Parameter               | Value    |
+    /// |-------------------------|----------|
+    /// | `path_loss_db`          | 100 dB   |
+    /// | `noise_floor_dbm`       | -117 dBm |
+    /// | `co_channel_rejection_db` | 6 dB   |
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::ChannelConfig;
+    /// let cfg = ChannelConfig::lora_defaults();
+    /// assert_eq!(cfg.path_loss_db, 100.0);
+    /// assert_eq!(cfg.noise_floor_dbm, -117.0);
+    /// assert_eq!(cfg.co_channel_rejection_db, 6.0);
+    /// ```
+    pub fn lora_defaults() -> Self {
+        Self {
+            path_loss_db: LORA_PATH_LOSS_DB,
+            noise_floor_dbm: LORA_NOISE_FLOOR_DBM,
+            co_channel_rejection_db: LORA_CO_CHANNEL_REJECTION_DB,
+        }
+    }
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self::lora_defaults()
+    }
+}
+
 struct ActiveTransmission {
     sender: NodeId,
     payload: Vec<u8>,
@@ -18,16 +94,18 @@ struct ActiveTransmission {
 }
 
 /// A simulated wireless channel with collision detection.
+///
+/// Physical-layer parameters are controlled by [`ChannelConfig`]. Use
+/// [`Channel::new()`] for LoRa defaults or [`Channel::with_config()`] to
+/// supply custom parameters for other protocols.
 pub struct Channel {
     active: Vec<ActiveTransmission>,
     completed: Vec<ActiveTransmission>,
-    co_channel_rejection_db: f32,
-    path_loss_db: f32,
-    noise_floor_dbm: f32,
+    config: ChannelConfig,
 }
 
 impl Channel {
-    /// Create a new empty channel.
+    /// Create a new empty channel using LoRa default parameters.
     ///
     /// # Examples
     ///
@@ -36,28 +114,70 @@ impl Channel {
     /// let ch = Channel::new();
     /// ```
     pub fn new() -> Self {
+        Self::with_config(ChannelConfig::lora_defaults())
+    }
+
+    /// Create a new channel with the given [`ChannelConfig`].
+    ///
+    /// This is the primary entry point for non-LoRa protocols.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::{Channel, ChannelConfig};
+    ///
+    /// // Simulate a short-range, low-noise environment (e.g. 802.15.4)
+    /// let ch = Channel::with_config(ChannelConfig {
+    ///     path_loss_db: 80.0,
+    ///     noise_floor_dbm: -100.0,
+    ///     co_channel_rejection_db: 3.0,
+    /// });
+    /// ```
+    pub fn with_config(config: ChannelConfig) -> Self {
         Self {
             active: Vec::new(),
             completed: Vec::new(),
-            co_channel_rejection_db: 6.0,
-            path_loss_db: 100.0,
-            noise_floor_dbm: -117.0,
+            config,
         }
     }
 
+    /// Create a new channel overriding only the co-channel rejection threshold.
+    ///
+    /// All other parameters default to LoRa values. Prefer
+    /// [`Channel::with_config()`] when you want to control multiple parameters.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::Channel;
+    /// let ch = Channel::with_co_channel_rejection(10.0);
+    /// ```
     pub fn with_co_channel_rejection(db: f32) -> Self {
-        Self {
+        Self::with_config(ChannelConfig {
             co_channel_rejection_db: db,
-            ..Self::new()
-        }
+            ..ChannelConfig::lora_defaults()
+        })
+    }
+
+    /// Return a reference to the channel's physical-layer configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::{Channel, ChannelConfig};
+    /// let ch = Channel::new();
+    /// assert_eq!(ch.config().path_loss_db, 100.0);
+    /// ```
+    pub fn config(&self) -> &ChannelConfig {
+        &self.config
     }
 
     pub fn compute_rssi(&self, tx_power_dbm: i8) -> f32 {
-        tx_power_dbm as f32 - self.path_loss_db
+        tx_power_dbm as f32 - self.config.path_loss_db
     }
 
     pub fn compute_snr(&self, rssi: f32) -> f32 {
-        rssi - self.noise_floor_dbm
+        rssi - self.config.noise_floor_dbm
     }
 
     /// Begin a transmission on the channel, returning a `TransmissionStarted` event.
@@ -98,10 +218,10 @@ impl Channel {
                 && active.sf == tx.sf
             {
                 let delta = tx.tx_power_dbm as f32 - active.tx_power_dbm as f32;
-                if delta >= self.co_channel_rejection_db {
+                if delta >= self.config.co_channel_rejection_db {
                     active.collided = true;
                     new_captured = true;
-                } else if delta <= -self.co_channel_rejection_db {
+                } else if delta <= -self.config.co_channel_rejection_db {
                     new_collided = true;
                     active.captured = true;
                 } else {
@@ -241,8 +361,8 @@ impl Channel {
     /// assert!(!completed[0].1);
     /// ```
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
-        let path_loss_db = self.path_loss_db;
-        let noise_floor_dbm = self.noise_floor_dbm;
+        let path_loss_db = self.config.path_loss_db;
+        let noise_floor_dbm = self.config.noise_floor_dbm;
         self.completed
             .drain(..)
             .map(|tx| {
@@ -500,6 +620,124 @@ mod tests {
         assert_eq!(delivered.len(), 1);
         assert!((delivered[0].rssi - (14.0_f32 - 100.0)).abs() < 0.001);
         assert!((delivered[0].snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
+    }
+
+    // --- ChannelConfig tests ---
+
+    #[test]
+    fn channel_config_lora_defaults_matches_constants() {
+        let cfg = ChannelConfig::lora_defaults();
+        assert_eq!(cfg.path_loss_db, LORA_PATH_LOSS_DB);
+        assert_eq!(cfg.noise_floor_dbm, LORA_NOISE_FLOOR_DBM);
+        assert_eq!(cfg.co_channel_rejection_db, LORA_CO_CHANNEL_REJECTION_DB);
+    }
+
+    #[test]
+    fn channel_config_default_is_lora_defaults() {
+        assert_eq!(ChannelConfig::default(), ChannelConfig::lora_defaults());
+    }
+
+    #[test]
+    fn with_config_exposes_config_accessor() {
+        let cfg = ChannelConfig {
+            path_loss_db: 70.0,
+            noise_floor_dbm: -95.0,
+            co_channel_rejection_db: 3.0,
+        };
+        let ch = Channel::with_config(cfg.clone());
+        assert_eq!(*ch.config(), cfg);
+    }
+
+    /// A channel with lower path loss (shorter range / indoor) produces a higher
+    /// RSSI for the same transmit power.
+    #[test]
+    fn low_path_loss_config_produces_higher_rssi() {
+        let low_loss_cfg = ChannelConfig {
+            path_loss_db: 60.0,
+            noise_floor_dbm: -100.0,
+            co_channel_rejection_db: 3.0,
+        };
+        let mut ch_lora = Channel::new(); // path_loss = 100 dB
+        let mut ch_short_range = Channel::with_config(low_loss_cfg);
+
+        let tx = make_tx_power(7, 868_100_000, 50_000, 14);
+
+        for ch in [&mut ch_lora, &mut ch_short_range] {
+            ch.begin_transmission(NodeId(1), &tx, 0);
+            ch.resolve_at(50_000);
+        }
+
+        let lora_rx = ch_lora.deliver_to(50_000);
+        let short_rx = ch_short_range.deliver_to(50_000);
+
+        assert_eq!(lora_rx.len(), 1);
+        assert_eq!(short_rx.len(), 1);
+        assert!(
+            short_rx[0].rssi > lora_rx[0].rssi,
+            "lower path loss must yield higher RSSI: short_range={} lora={}",
+            short_rx[0].rssi,
+            lora_rx[0].rssi,
+        );
+    }
+
+    /// A channel with a lower noise floor produces a higher SNR for the same signal.
+    #[test]
+    fn lower_noise_floor_produces_higher_snr() {
+        let quiet_cfg = ChannelConfig {
+            path_loss_db: 100.0,
+            noise_floor_dbm: -130.0, // quieter than LoRa default of -117 dBm
+            co_channel_rejection_db: 6.0,
+        };
+        let mut ch_lora = Channel::new();
+        let mut ch_quiet = Channel::with_config(quiet_cfg);
+
+        let tx = make_tx_power(7, 868_100_000, 50_000, 14);
+
+        for ch in [&mut ch_lora, &mut ch_quiet] {
+            ch.begin_transmission(NodeId(1), &tx, 0);
+            ch.resolve_at(50_000);
+        }
+
+        let lora_rx = ch_lora.deliver_to(50_000);
+        let quiet_rx = ch_quiet.deliver_to(50_000);
+
+        assert_eq!(lora_rx.len(), 1);
+        assert_eq!(quiet_rx.len(), 1);
+        assert!(
+            quiet_rx[0].snr > lora_rx[0].snr,
+            "lower noise floor must yield higher SNR: quiet={} lora={}",
+            quiet_rx[0].snr,
+            lora_rx[0].snr,
+        );
+    }
+
+    /// A channel with a higher capture threshold behaves more conservatively:
+    /// a power delta that would survive capture on the LoRa channel causes both
+    /// signals to collide instead.
+    #[test]
+    fn high_capture_threshold_prevents_capture_where_lora_would_survive() {
+        // delta = 6 dB exactly meets the LoRa threshold → strong survives on LoRa
+        let mut ch_lora = Channel::new(); // threshold = 6 dB
+        let mut ch_strict = Channel::with_config(ChannelConfig {
+            path_loss_db: 100.0,
+            noise_floor_dbm: -117.0,
+            co_channel_rejection_db: 10.0, // stricter: 6 dB delta not enough
+        });
+
+        let strong = make_tx_power(7, 868_100_000, 50_000, 20);
+        let weak = make_tx_power(7, 868_100_000, 50_000, 14);
+
+        for ch in [&mut ch_lora, &mut ch_strict] {
+            ch.begin_transmission(NodeId(1), &strong, 0);
+            ch.begin_transmission(NodeId(2), &weak, 10_000);
+            ch.resolve_at(60_000);
+        }
+
+        let lora_rx = ch_lora.deliver_to(60_000);
+        let strict_rx = ch_strict.deliver_to(60_000);
+
+        assert_eq!(lora_rx.len(), 1, "LoRa threshold=6: strong signal must survive");
+        assert_eq!(strict_rx.len(), 0, "strict threshold=10: both collide at delta=6");
     }
 
     proptest! {
