@@ -103,6 +103,27 @@ mod tests {
         assert_eq!(rng.next_u64(), 11_177_516_664_432_764_457);
     }
 
+    /// `next_u32` truncates the upper 32 bits of `next_u64`.
+    #[test]
+    fn next_u32_consistent_with_next_u64() {
+        let mut rng_u32 = Xorshift64::new(5);
+        let mut rng_u64 = Xorshift64::new(5);
+        // next_u32 must equal the low 32 bits of next_u64
+        assert_eq!(rng_u32.next_u32(), rng_u64.next_u64() as u32);
+    }
+
+    /// `try_fill_bytes` must succeed and produce the same bytes as `fill_bytes`.
+    #[test]
+    fn try_fill_bytes_matches_fill_bytes() {
+        let mut a = Xorshift64::new(9);
+        let mut b = Xorshift64::new(9);
+        let mut buf_a = [0u8; 16];
+        let mut buf_b = [0u8; 16];
+        a.try_fill_bytes(&mut buf_a).expect("try_fill_bytes should never fail");
+        b.fill_bytes(&mut buf_b);
+        assert_eq!(buf_a, buf_b);
+    }
+
     proptest! {
         #[test]
         fn nonzero_seed_produces_nonzero_first(seed in 1u64..u64::MAX) {
