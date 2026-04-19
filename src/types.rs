@@ -30,7 +30,7 @@ pub struct NodeId(pub u32);
 /// assert_eq!(meta.payload, vec![0x01, 0x02]);
 /// assert_eq!(meta.sf, 7);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RxMetadata {
     pub payload: Vec<u8>,
     pub rssi: f32,
@@ -58,7 +58,7 @@ pub struct RxMetadata {
 /// assert_eq!(tx.payload.len(), 2);
 /// assert_eq!(tx.sf, 7);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Transmission {
     pub payload: Vec<u8>,
     pub sf: u8,
@@ -86,7 +86,7 @@ pub struct Transmission {
 ///     _ => panic!("expected TransmissionStarted"),
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChannelEvent {
     TransmissionStarted {
         sender: NodeId,
