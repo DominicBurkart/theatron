@@ -368,21 +368,3 @@ fn protocol_init_wake_at_zero_fires_update() {
         "update was never called even though init returned Some(0)"
     );
 }
-
-/// Guard against `src/main.rs` — that file's `main_does_not_panic` test is a
-/// trivial stub that adds no value.  This test documents the issue so it is not
-/// forgotten.  Once `src/main.rs` is removed the binary target and this comment
-/// can be removed as well.
-///
-/// See PR body for the recommended follow-up action.
-#[test]
-fn main_binary_is_noop_and_should_be_removed() {
-    // This test exists only as documentation.  The real assertion is in the PR
-    // body: src/main.rs contains a trivial `println!` and a `main_does_not_panic`
-    // test that provides zero coverage.  It should be deleted along with the
-    // [[bin]] entry in Cargo.toml once the project no longer needs a binary
-    // target.
-    //
-    // Nothing to assert here — the test passes unconditionally to flag the issue
-    // without causing a build failure.
-}

@@ -135,6 +135,7 @@ impl Timings for SimulatedRadio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lora_modulation::{Bandwidth, CodingRate, SpreadingFactor};
 
     const TEST_SF: u8 = 7;
     const TEST_FREQ: u32 = 868_100_000;
