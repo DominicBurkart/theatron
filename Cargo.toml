@@ -22,10 +22,6 @@ path = "examples/lorawan_file_transfer/main.rs"
 name = "aloha"
 path = "examples/aloha/main.rs"
 
-[features]
-default = ["prng"]
-prng = ["rand_core"]
-
 [dependencies]
 rand_core = { version = "0.6", default-features = false, optional = true }
 
@@ -39,3 +35,7 @@ proptest = "1"
 [profile.release]
 lto = true
 codegen-units = 1
+
+[features]
+default = ["prng"]
+prng = ["rand_core"]
