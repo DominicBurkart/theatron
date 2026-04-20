@@ -736,8 +736,16 @@ mod tests {
         let lora_rx = ch_lora.deliver_to(60_000);
         let strict_rx = ch_strict.deliver_to(60_000);
 
-        assert_eq!(lora_rx.len(), 1, "LoRa threshold=6: strong signal must survive");
-        assert_eq!(strict_rx.len(), 0, "strict threshold=10: both collide at delta=6");
+        assert_eq!(
+            lora_rx.len(),
+            1,
+            "LoRa threshold=6: strong signal must survive"
+        );
+        assert_eq!(
+            strict_rx.len(),
+            0,
+            "strict threshold=10: both collide at delta=6"
+        );
     }
 
     proptest! {

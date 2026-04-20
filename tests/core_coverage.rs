@@ -247,8 +247,14 @@ fn channel_late_strong_captures_earlier_weak() {
     ch.resolve_at(80_000);
     let completed = ch.drain_completed();
 
-    let strong_entry = completed.iter().find(|(id, _, _, _)| *id == NodeId(2)).unwrap();
-    let weak_entry = completed.iter().find(|(id, _, _, _)| *id == NodeId(1)).unwrap();
+    let strong_entry = completed
+        .iter()
+        .find(|(id, _, _, _)| *id == NodeId(2))
+        .unwrap();
+    let weak_entry = completed
+        .iter()
+        .find(|(id, _, _, _)| *id == NodeId(1))
+        .unwrap();
     assert!(!strong_entry.1, "strong signal should not be collided");
     assert!(strong_entry.2, "strong signal should be captured");
     assert!(weak_entry.1, "weak signal should be collided");
@@ -401,7 +407,10 @@ fn scheduler_multi_hop_reply_chain() {
     sched.run();
 
     assert_eq!(sched.metrics.total_tx, 2, "original + reply");
-    assert_eq!(sched.metrics.total_rx, 2, "each node receives the other's TX");
+    assert_eq!(
+        sched.metrics.total_rx, 2,
+        "each node receives the other's TX"
+    );
 }
 
 #[test]
@@ -448,7 +457,10 @@ fn scheduler_interferer_and_node_different_sf_no_collision() {
     // Node 1 TX (SF7) -> delivered to Node 2 (1 RX)
     // Interferer TX (SF12) -> delivered to Node 1 and Node 2 (2 RX)
     // Total: 3 RX
-    assert_eq!(sched.metrics.total_rx, 3, "node TX + interferer TX delivered on different SFs");
+    assert_eq!(
+        sched.metrics.total_rx, 3,
+        "node TX + interferer TX delivered on different SFs"
+    );
 }
 
 #[test]
