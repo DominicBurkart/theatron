@@ -29,6 +29,9 @@
 //! 4. `PeriodicTraffic` invariant (proptest): it yields at most `count`
 //!    payloads over any monotonically-nondecreasing time sequence, and every
 //!    payload equals the configured bytes.
+//! 5. `AlohaNode::update` returns `Some(future_time)` when no payload is
+//!    ready at the current time but remaining traffic exists — the
+//!    "defer-and-wake" branch of `try_generate_tx`.
 //!
 //! # Strategy
 //! - **Realistic integration** (scheduler + channel + example types) for
@@ -36,6 +39,9 @@
 //!   skips.
 //! - **Proptest** for (4), the simplest invariant of the traffic model that
 //!   is load-bearing for any protocol using it.
+//! - **Unit test** for (5) to cover the `Some(future)` arm of
+//!   `try_generate_tx` that integration tests miss because they all use
+//!   `count = 1`.
 //! - No doctests: these types live in an example crate and are not part of
 //!   the public theatron API surface.
 //!
@@ -43,15 +49,15 @@
 //! A latent interaction between `AlohaNode::update`'s "probe" logic and
 //! `PeriodicTraffic`'s stateful `next_payload` causes higher payload counts
 //! to be consumed out-of-band. That is a product bug; these tests stick to
-//! `count = 1` scenarios so they exercise the integration without depending
-//! on that interaction.
+//! `count = 1` scenarios for integration tests so they exercise the
+//! integration without depending on that interaction.
 
 #[path = "../examples/aloha/aloha_node.rs"]
 mod aloha_node;
 
 use aloha_node::{AlohaNode, AlohaReceiver, PeriodicTraffic};
 use proptest::prelude::*;
-use theatron::scheduler::Scheduler;
+use theatron::scheduler::{NodeHandle, Scheduler};
 use theatron::traits::TrafficModel;
 use theatron::types::NodeId;
 
@@ -142,6 +148,52 @@ fn two_aloha_nodes_on_different_sf_both_deliver() {
     // passive receiver), so total_rx = 2 * 2 = 4.
     assert_eq!(sched.metrics.total_rx, 4);
     assert_eq!(sched.metrics.node_rx_count(NodeId(99)), 2);
+}
+
+// ---------------------------------------------------------------------------
+// (5) Defer-and-wake: update returns Some(future) when payload not yet ready
+// ---------------------------------------------------------------------------
+
+/// Exercises the `Some(future)` arm of `AlohaNode::try_generate_tx`.
+///
+/// With `count = 2` and `poll_interval_us = 1_000_000 µs`:
+/// - `update(0)` generates the first TX (remaining → 1, next_time → 1_000_000)
+///   and returns `Some(0)`.
+/// - After draining via `poll_transmit`, calling `update(500_000)` finds:
+///   - `next_payload(500_000)` → `None` (too early; next_time = 1_000_000)
+///   - probe: `next_payload(1_500_000)` → `Some` (remaining → 0)
+///   - returns `Some(1_500_000)` ← the previously-uncovered branch.
+#[test]
+fn aloha_node_defers_wake_when_payload_not_yet_ready() {
+    let poll_interval_us = 1_000_000_u64;
+    let tx_duration_us = 50_000_u64;
+    // count = 2: first payload consumed at t=0, second not ready until t=1_000_000.
+    let traffic = PeriodicTraffic::new(vec![0xAB], poll_interval_us, 2);
+    let mut node = AlohaNode::new(
+        NodeId(1),
+        Box::new(traffic),
+        poll_interval_us,
+        7,
+        868_100_000,
+        tx_duration_us,
+    );
+
+    // First update: payload is available immediately at t=0.
+    let wake0 = node.update(0);
+    assert_eq!(wake0, Some(0), "first update should return Some(0)");
+    // Drain the pending TX so pending_tx is None for the next update.
+    assert!(node.poll_transmit(0).is_some());
+
+    // Second update at t=500_000 (halfway through the 1 s interval).
+    // next_payload(500_000) → None (too early).
+    // Probe next_payload(1_500_000) → Some (remaining=1, future slot ready).
+    // Expected: Some(1_500_000) — defer and wake at the probed future time.
+    let wake1 = node.update(500_000);
+    assert_eq!(
+        wake1,
+        Some(poll_interval_us + 500_000),
+        "update before next interval should defer to poll_interval_us + current_time"
+    );
 }
 
 // ---------------------------------------------------------------------------
