@@ -23,7 +23,11 @@
 //! 1. A single-payload `AlohaNode` drives exactly one TX end-to-end through
 //!    the scheduler + channel and stops scheduling itself (no infinite wake
 //!    loop) once traffic is exhausted.
-//! 2. The one TX is delivered verbatim to a passive `AlohaReceiver`.
+//! 2. A passive `AlohaReceiver` records exactly one RX for the emitted TX
+//!    (delivery confirmed by rx count only; the scheduler does not expose
+//!    node handles post-run, so byte-level equality of the received payload
+//!    is not asserted here — the `Transmission::payload` copy is covered by
+//!    unit tests in `examples/aloha/aloha_node.rs`).
 //! 3. Two single-payload `AlohaNode`s on orthogonal spreading factors both
 //!    deliver, with no collisions, regardless of simultaneous start.
 //! 4. `PeriodicTraffic` invariant (proptest): it yields at most `count`
@@ -105,7 +109,8 @@ fn single_shot_aloha_emits_exactly_one_tx_and_scheduler_halts() {
 }
 
 // ---------------------------------------------------------------------------
-// (2) Payload is delivered verbatim to a passive AlohaReceiver
+// (2) Passive AlohaReceiver records one RX for the emitted TX
+// (delivery confirmed by rx count only — see module-level invariant (2))
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -163,6 +168,15 @@ fn two_aloha_nodes_on_different_sf_both_deliver() {
 ///   - `next_payload(500_000)` → `None` (too early; next_time = 1_000_000)
 ///   - probe: `next_payload(1_500_000)` → `Some` (remaining → 0)
 ///   - returns `Some(1_500_000)` ← the previously-uncovered branch.
+///
+/// NOTE: the probe call has a destructive side effect — it consumes the
+/// second payload slot (remaining 1 → 0) as part of the known
+/// probe/`PeriodicTraffic` interaction documented in the module-level
+/// "Out of scope" section. A follow-up `update(1_500_000)` would therefore
+/// return `None` (not `Some`) and the second TX would never fire. This test
+/// only validates the branch's immediate return value, not downstream
+/// behavior — do not treat a pass here as evidence that the second payload
+/// actually gets transmitted.
 #[test]
 fn aloha_node_defers_wake_when_payload_not_yet_ready() {
     let poll_interval_us = 1_000_000_u64;
@@ -238,8 +252,10 @@ proptest! {
         // First payload is available at t = 0.
         prop_assert!(model.next_payload(0).is_some());
         // A query strictly inside the interval must not emit.
+        // `too_early = interval_us * early_offset / 100` with
+        // `early_offset in 1..=99` is always `< interval_us` by integer
+        // division, so no `prop_assume!` guard is required.
         let too_early = (interval_us * early_offset) / 100;
-        prop_assume!(too_early < interval_us);
         prop_assert!(model.next_payload(too_early).is_none());
         // At exactly interval_us, the next payload becomes available.
         prop_assert!(model.next_payload(interval_us).is_some());
