@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::channel::{Channel, ChannelConfig, CompletedTx};
+use crate::channel::{Channel, CompletedTx};
 use crate::metrics::MetricsCollector;
 use crate::time::SimTime;
 use crate::traits::InterferenceSource;
@@ -224,23 +224,20 @@ impl Scheduler {
                     self.metrics.record_capture();
                 }
                 let mut wakes = Vec::new();
+                let mut tx_node_idxs = Vec::new();
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
+                        let node_id = self.nodes[i].node_id();
                         let next = self.nodes[i].on_receive(frame.clone(), time);
-                        self.metrics.record_rx(self.nodes[i].node_id());
+                        self.metrics.record_rx(node_id);
                         if let Some(t) = next {
-                            wakes.push((self.nodes[i].node_id(), t));
+                            wakes.push((node_id, t));
                         }
+                        tx_node_idxs.push(i);
                     }
                 }
                 for (node_id, t) in wakes {
                     self.schedule(t, EventKind::Wake { node_id });
-                }
-                let mut tx_node_idxs = Vec::new();
-                for i in 0..self.nodes.len() {
-                    if self.nodes[i].node_id() != sender {
-                        tx_node_idxs.push(i);
-                    }
                 }
                 for i in tx_node_idxs {
                     self.handle_poll_transmit(i, time);

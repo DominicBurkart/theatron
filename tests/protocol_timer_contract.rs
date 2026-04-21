@@ -63,11 +63,7 @@ impl Protocol for TwoPhaseProtocol {
         None
     }
 
-    fn poll_transmit(
-        &self,
-        state: &mut TwoPhaseState,
-        _time: SimTime,
-    ) -> Option<Transmission> {
+    fn poll_transmit(&self, state: &mut TwoPhaseState, _time: SimTime) -> Option<Transmission> {
         // Emit exactly one beacon frame the first time we are polled.
         if state.transmit_count == 0 {
             state.transmit_count += 1;
@@ -123,7 +119,14 @@ impl<P: Protocol> ProtocolNode<P> {
     /// `Scheduler::add_node`.
     fn new(id: NodeId, protocol: P, config: P::Config) -> (Self, Option<SimTime>) {
         let (state, wake) = protocol.init(config);
-        (Self { id, protocol, state }, wake)
+        (
+            Self {
+                id,
+                protocol,
+                state,
+            },
+            wake,
+        )
     }
 }
 
@@ -159,7 +162,7 @@ where
 fn scheduler_delivers_wake_at_exact_scheduled_time() {
     const RX_WINDOW: SimTime = 1_000_000;
 
-    let (node, initial_wake) = ProtocolNode::new(NodeId(1), TwoPhaseProtocol, ());
+    let (_node, _initial_wake) = ProtocolNode::new(NodeId(1), TwoPhaseProtocol, ());
     // Downcast to Box<dyn NodeHandle> — we need to keep a raw pointer so we can
     // inspect state after the run.  Instead, we run the scheduler and then query
     // the metrics (which encode the transmit count).  The wake-time assertion is
@@ -244,7 +247,9 @@ fn scheduler_delivers_wake_at_exact_scheduled_time() {
         transmit_count: 0,
     }));
 
-    let protocol = ObservingProtocol { shared: Rc::clone(&shared) };
+    let protocol = ObservingProtocol {
+        shared: Rc::clone(&shared),
+    };
     let (node, initial_wake) = ProtocolNode::new(NodeId(1), protocol, ());
 
     let mut sched = Scheduler::new(2_000_000);
@@ -271,8 +276,7 @@ fn scheduler_delivers_wake_at_exact_scheduled_time() {
 
     // --- Transmission count: exactly one frame was sent ---
     assert_eq!(
-        sched.metrics.total_tx,
-        1,
+        sched.metrics.total_tx, 1,
         "expected exactly 1 transmission, got {}",
         sched.metrics.total_tx,
     );
@@ -349,7 +353,9 @@ fn protocol_init_wake_at_zero_fires_update() {
 
     let (node, initial_wake) = ProtocolNode::new(
         NodeId(3),
-        WakeAtZeroProtocol { flag: Rc::clone(&update_called) },
+        WakeAtZeroProtocol {
+            flag: Rc::clone(&update_called),
+        },
         (),
     );
 
@@ -361,22 +367,4 @@ fn protocol_init_wake_at_zero_fires_update() {
         *update_called.borrow(),
         "update was never called even though init returned Some(0)"
     );
-}
-
-/// Guard against `src/main.rs` — that file's `main_does_not_panic` test is a
-/// trivial stub that adds no value.  This test documents the issue so it is not
-/// forgotten.  Once `src/main.rs` is removed the binary target and this comment
-/// can be removed as well.
-///
-/// See PR body for the recommended follow-up action.
-#[test]
-fn main_binary_is_noop_and_should_be_removed() {
-    // This test exists only as documentation.  The real assertion is in the PR
-    // body: src/main.rs contains a trivial `println!` and a `main_does_not_panic`
-    // test that provides zero coverage.  It should be deleted along with the
-    // [[bin]] entry in Cargo.toml once the project no longer needs a binary
-    // target.
-    //
-    // Nothing to assert here — the test passes unconditionally to flag the issue
-    // without causing a build failure.
 }
