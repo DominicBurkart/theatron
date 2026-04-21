@@ -18,91 +18,6 @@ use theatron::traits::Protocol;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
 // ---------------------------------------------------------------------------
-// TwoPhaseProtocol — a minimal Protocol implementation used by the tests
-// ---------------------------------------------------------------------------
-
-/// A two-phase protocol that:
-///
-/// 1. At t = 0 transmits one beacon frame and asks to be woken at t = 1_000_000.
-/// 2. At t = 1_000_000 records the exact wake time so the test can assert it.
-///
-/// This is intentionally the smallest possible `Protocol` that exercises both
-/// the transmit path and the deferred-wake (timer) path.
-struct TwoPhaseProtocol;
-
-struct TwoPhaseState {
-    /// Set to `true` once `update` has been called at the RX-window time.
-    rx_window_fired: bool,
-    /// The `SimTime` value passed to the second `update` call (the RX window).
-    rx_window_time: Option<SimTime>,
-    /// Number of frames queued for transmission by `poll_transmit`.
-    transmit_count: u32,
-}
-
-impl Protocol for TwoPhaseProtocol {
-    type Config = ();
-    type State = TwoPhaseState;
-    type Metrics = u32; // returns the transmit count
-
-    fn init(&self, _config: ()) -> (TwoPhaseState, Option<SimTime>) {
-        let state = TwoPhaseState {
-            rx_window_fired: false,
-            rx_window_time: None,
-            transmit_count: 0,
-        };
-        // Wake immediately at t = 0 so `update` → `poll_transmit` fires.
-        (state, Some(0))
-    }
-
-    fn on_receive(
-        &self,
-        _state: &mut TwoPhaseState,
-        _frame: RxMetadata,
-        _time: SimTime,
-    ) -> Option<SimTime> {
-        None
-    }
-
-    fn poll_transmit(
-        &self,
-        state: &mut TwoPhaseState,
-        _time: SimTime,
-    ) -> Option<Transmission> {
-        // Emit exactly one beacon frame the first time we are polled.
-        if state.transmit_count == 0 {
-            state.transmit_count += 1;
-            Some(Transmission {
-                payload: vec![0xBE, 0xAC, 0x04],
-                sf: 7,
-                bandwidth: 125_000,
-                coding_rate: 5,
-                frequency: 868_100_000,
-                duration_us: 50_000,
-                tx_power_dbm: 14,
-            })
-        } else {
-            None
-        }
-    }
-
-    fn update(&self, state: &mut TwoPhaseState, time: SimTime) -> Option<SimTime> {
-        if !state.rx_window_fired {
-            // Phase 1 — initial wake.  Schedule the RX window.
-            state.rx_window_fired = true;
-            Some(1_000_000)
-        } else {
-            // Phase 2 — RX-window wake.  Record the exact time for assertion.
-            state.rx_window_time = Some(time);
-            None // no further wakes
-        }
-    }
-
-    fn metrics(&self, state: &TwoPhaseState) -> u32 {
-        state.transmit_count
-    }
-}
-
-// ---------------------------------------------------------------------------
 // ProtocolNode — bridges Protocol + State into NodeHandle
 // ---------------------------------------------------------------------------
 
@@ -123,7 +38,14 @@ impl<P: Protocol> ProtocolNode<P> {
     /// `Scheduler::add_node`.
     fn new(id: NodeId, protocol: P, config: P::Config) -> (Self, Option<SimTime>) {
         let (state, wake) = protocol.init(config);
-        (Self { id, protocol, state }, wake)
+        (
+            Self {
+                id,
+                protocol,
+                state,
+            },
+            wake,
+        )
     }
 }
 
@@ -159,26 +81,10 @@ where
 fn scheduler_delivers_wake_at_exact_scheduled_time() {
     const RX_WINDOW: SimTime = 1_000_000;
 
-    let (node, initial_wake) = ProtocolNode::new(NodeId(1), TwoPhaseProtocol, ());
-    // Downcast to Box<dyn NodeHandle> — we need to keep a raw pointer so we can
-    // inspect state after the run.  Instead, we run the scheduler and then query
-    // the metrics (which encode the transmit count).  The wake-time assertion is
-    // encoded in the protocol state; we recover it through a second, post-run
-    // `ProtocolNode` that we build just for introspection.
-    //
-    // Simpler approach: use a shared-state wrapper via a raw pointer that is
-    // valid for the duration of the test.  But the cleanest approach for this
-    // codebase is to keep everything owned.  We therefore use a two-node setup
-    // where one node records the observation and we extract it from `metrics`.
-    //
-    // Actually the cleanest approach: keep the `ProtocolNode` in a `Box`, run
-    // the scheduler, and downcast back.  `Box<dyn NodeHandle>` doesn't support
-    // downcasting, so we'll use `unsafe` pointer aliasing to peek at state.
-    //
-    // The simplest correct approach: use `std::rc::Rc<RefCell<…>>` for shared
-    // state.  We go with that to keep things readable.
-
-    // Re-implement with shared state so we can observe after the run.
+    // Use `Rc<RefCell<…>>` for shared state so the test body can observe the
+    // protocol's behaviour after the scheduler has run.  A `Box<dyn NodeHandle>`
+    // handed to the scheduler cannot be downcast, so shared state is the
+    // cleanest way to inspect wake-time observations post-run.
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -244,7 +150,9 @@ fn scheduler_delivers_wake_at_exact_scheduled_time() {
         transmit_count: 0,
     }));
 
-    let protocol = ObservingProtocol { shared: Rc::clone(&shared) };
+    let protocol = ObservingProtocol {
+        shared: Rc::clone(&shared),
+    };
     let (node, initial_wake) = ProtocolNode::new(NodeId(1), protocol, ());
 
     let mut sched = Scheduler::new(2_000_000);
@@ -271,8 +179,7 @@ fn scheduler_delivers_wake_at_exact_scheduled_time() {
 
     // --- Transmission count: exactly one frame was sent ---
     assert_eq!(
-        sched.metrics.total_tx,
-        1,
+        sched.metrics.total_tx, 1,
         "expected exactly 1 transmission, got {}",
         sched.metrics.total_tx,
     );
@@ -349,7 +256,9 @@ fn protocol_init_wake_at_zero_fires_update() {
 
     let (node, initial_wake) = ProtocolNode::new(
         NodeId(3),
-        WakeAtZeroProtocol { flag: Rc::clone(&update_called) },
+        WakeAtZeroProtocol {
+            flag: Rc::clone(&update_called),
+        },
         (),
     );
 
@@ -361,22 +270,4 @@ fn protocol_init_wake_at_zero_fires_update() {
         *update_called.borrow(),
         "update was never called even though init returned Some(0)"
     );
-}
-
-/// Guard against `src/main.rs` — that file's `main_does_not_panic` test is a
-/// trivial stub that adds no value.  This test documents the issue so it is not
-/// forgotten.  Once `src/main.rs` is removed the binary target and this comment
-/// can be removed as well.
-///
-/// See PR body for the recommended follow-up action.
-#[test]
-fn main_binary_is_noop_and_should_be_removed() {
-    // This test exists only as documentation.  The real assertion is in the PR
-    // body: src/main.rs contains a trivial `println!` and a `main_does_not_panic`
-    // test that provides zero coverage.  It should be deleted along with the
-    // [[bin]] entry in Cargo.toml once the project no longer needs a binary
-    // target.
-    //
-    // Nothing to assert here — the test passes unconditionally to flag the issue
-    // without causing a build failure.
 }
