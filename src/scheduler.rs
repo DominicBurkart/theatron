@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::channel::{Channel, ChannelConfig, CompletedTx};
+use crate::channel::{Channel, CompletedTx};
 use crate::metrics::MetricsCollector;
 use crate::time::SimTime;
 use crate::traits::InterferenceSource;
