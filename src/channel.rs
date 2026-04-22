@@ -638,16 +638,16 @@ mod tests {
             ch.resolve_at(50_000);
         }
 
-        let lora_rx = ch_lora.deliver_to(50_000);
-        let short_rx = ch_short_range.deliver_to(50_000);
+        let lora_rx = ch_lora.drain_completed();
+        let short_rx = ch_short_range.drain_completed();
 
         assert_eq!(lora_rx.len(), 1);
         assert_eq!(short_rx.len(), 1);
         assert!(
-            short_rx[0].rssi > lora_rx[0].rssi,
+            short_rx[0].3.rssi > lora_rx[0].3.rssi,
             "lower path loss must yield higher RSSI: short_range={} lora={}",
-            short_rx[0].rssi,
-            lora_rx[0].rssi,
+            short_rx[0].3.rssi,
+            lora_rx[0].3.rssi,
         );
     }
 
@@ -669,16 +669,16 @@ mod tests {
             ch.resolve_at(50_000);
         }
 
-        let lora_rx = ch_lora.deliver_to(50_000);
-        let quiet_rx = ch_quiet.deliver_to(50_000);
+        let lora_rx = ch_lora.drain_completed();
+        let quiet_rx = ch_quiet.drain_completed();
 
         assert_eq!(lora_rx.len(), 1);
         assert_eq!(quiet_rx.len(), 1);
         assert!(
-            quiet_rx[0].snr > lora_rx[0].snr,
+            quiet_rx[0].3.snr > lora_rx[0].3.snr,
             "lower noise floor must yield higher SNR: quiet={} lora={}",
-            quiet_rx[0].snr,
-            lora_rx[0].snr,
+            quiet_rx[0].3.snr,
+            lora_rx[0].3.snr,
         );
     }
 
@@ -704,11 +704,25 @@ mod tests {
             ch.resolve_at(60_000);
         }
 
-        let lora_rx = ch_lora.deliver_to(60_000);
-        let strict_rx = ch_strict.deliver_to(60_000);
+        let lora_rx = ch_lora.drain_completed();
+        let strict_rx = ch_strict.drain_completed();
 
-        assert_eq!(lora_rx.len(), 1, "LoRa threshold=6: strong signal must survive");
-        assert_eq!(strict_rx.len(), 0, "strict threshold=10: both collide at delta=6");
+        assert_eq!(
+            lora_rx
+                .iter()
+                .filter(|(_, collided, _, _)| !collided)
+                .count(),
+            1,
+            "LoRa threshold=6: strong signal must survive"
+        );
+        assert_eq!(
+            strict_rx
+                .iter()
+                .filter(|(_, collided, _, _)| !collided)
+                .count(),
+            0,
+            "strict threshold=10: both collide at delta=6"
+        );
     }
 
     proptest! {

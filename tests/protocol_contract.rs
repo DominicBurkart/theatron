@@ -26,20 +26,11 @@ impl Protocol for MinimalProtocol {
         (MinimalState { transmitted: false }, Some(0))
     }
 
-    fn on_receive(
-        &self,
-        _state: &mut MinimalState,
-        _frame: RxMetadata,
-        _time: u64,
-    ) -> Option<u64> {
+    fn on_receive(&self, _state: &mut MinimalState, _frame: RxMetadata, _time: u64) -> Option<u64> {
         None
     }
 
-    fn poll_transmit(
-        &self,
-        state: &mut MinimalState,
-        _time: u64,
-    ) -> Option<Transmission> {
+    fn poll_transmit(&self, state: &mut MinimalState, _time: u64) -> Option<Transmission> {
         if state.transmitted {
             return None;
         }

@@ -1,4 +1,4 @@
-use lora_modulation::{Bandwidth, BaseBandModulationParams, CodingRate, SpreadingFactor};
+use lora_modulation::BaseBandModulationParams;
 use lorawan_device::Timings;
 use lorawan_device::nb_device::radio::{Event, PhyRxTx, Response, RfConfig, RxQuality, TxConfig};
 
