@@ -180,7 +180,11 @@ fn wake_past_end_time_is_dropped() {
         "wake past end_time must never be dispatched, got {:?}",
         log.borrow(),
     );
-    assert!(sched.current_time() <= END);
+    assert_eq!(
+        sched.current_time(),
+        0,
+        "scheduler must not advance time when the only event is past end_time",
+    );
 }
 
 /// An interferer whose first poll is past `end_time` must not inject.
