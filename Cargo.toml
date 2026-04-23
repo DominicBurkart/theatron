@@ -10,10 +10,6 @@ repository = "https://github.com/DominicBurkart/theatron"
 keywords = ["lora", "lorawan", "protocol", "simulation", "wireless"]
 categories = ["simulation", "network-programming"]
 
-[[bin]]
-name = "theatron"
-path = "src/main.rs"
-
 [[example]]
 name = "lorawan_file_transfer"
 path = "examples/lorawan_file_transfer/main.rs"
@@ -31,6 +27,9 @@ lorawan = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7774bd98
 lora-modulation = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7774bd98874f1e5abfa9ac62eface81" }
 proptest = "1"
 rand_core = { version = "0.6", default-features = false }
+
+[features]
+test-utils = []
 
 [profile.release]
 lto = true

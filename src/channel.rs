@@ -83,7 +83,6 @@ struct ActiveTransmission {
     sender: NodeId,
     payload: Vec<u8>,
     sf: u8,
-    #[allow(dead_code)]
     bandwidth: u32,
     frequency: u32,
     start: SimTime,
@@ -183,7 +182,9 @@ impl Channel {
     /// Begin a transmission on the channel, returning a `TransmissionStarted` event.
     ///
     /// Collisions are detected immediately: if the new transmission overlaps in time with
-    /// an existing active transmission on the same SF and frequency, both are marked collided.
+    /// an existing active transmission on the same SF, bandwidth, and frequency, both are
+    /// marked collided. Transmissions on the same SF and frequency but different bandwidths
+    /// occupy distinct orthogonal sub-bands and do not collide.
     ///
     /// # Examples
     ///
@@ -216,6 +217,7 @@ impl Channel {
             if overlaps(active.start, active.end, time, end)
                 && active.frequency == tx.frequency
                 && active.sf == tx.sf
+                && active.bandwidth == tx.bandwidth
             {
                 let delta = tx.tx_power_dbm as f32 - active.tx_power_dbm as f32;
                 if delta >= self.config.co_channel_rejection_db {
@@ -468,6 +470,34 @@ mod tests {
         ch.resolve_at(60_000);
         let delivered = ch.deliver_to(60_000);
         assert_eq!(delivered.len(), 2);
+    }
+
+    #[test]
+    fn different_bandwidth_no_collision() {
+        let mut ch = Channel::new();
+        let tx1 = Transmission {
+            payload: vec![0x01, 0x02],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 14,
+        };
+        let tx2 = Transmission {
+            payload: vec![0x03, 0x04],
+            sf: 7,
+            bandwidth: 250_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 14,
+        };
+        ch.begin_transmission(NodeId(1), &tx1, 0);
+        ch.begin_transmission(NodeId(2), &tx2, 10_000);
+        ch.resolve_at(60_000);
+        let delivered = ch.deliver_to(60_000);
+        assert_eq!(delivered.len(), 2, "different BW => no collision");
     }
 
     #[test]
