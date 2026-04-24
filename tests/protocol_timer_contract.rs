@@ -162,26 +162,13 @@ where
 fn scheduler_delivers_wake_at_exact_scheduled_time() {
     const RX_WINDOW: SimTime = 1_000_000;
 
+    // Construct `TwoPhaseProtocol` so its `impl Protocol` block is exercised
+    // by the compiler; the actual observation below uses `ObservingProtocol`
+    // because `Box<dyn NodeHandle>` cannot be downcast for post-run inspection.
     let (_node, _initial_wake) = ProtocolNode::new(NodeId(1), TwoPhaseProtocol, ());
-    // Downcast to Box<dyn NodeHandle> — we need to keep a raw pointer so we can
-    // inspect state after the run.  Instead, we run the scheduler and then query
-    // the metrics (which encode the transmit count).  The wake-time assertion is
-    // encoded in the protocol state; we recover it through a second, post-run
-    // `ProtocolNode` that we build just for introspection.
-    //
-    // Simpler approach: use a shared-state wrapper via a raw pointer that is
-    // valid for the duration of the test.  But the cleanest approach for this
-    // codebase is to keep everything owned.  We therefore use a two-node setup
-    // where one node records the observation and we extract it from `metrics`.
-    //
-    // Actually the cleanest approach: keep the `ProtocolNode` in a `Box`, run
-    // the scheduler, and downcast back.  `Box<dyn NodeHandle>` doesn't support
-    // downcasting, so we'll use `unsafe` pointer aliasing to peek at state.
-    //
-    // The simplest correct approach: use `std::rc::Rc<RefCell<…>>` for shared
-    // state.  We go with that to keep things readable.
 
-    // Re-implement with shared state so we can observe after the run.
+    // Use Rc<RefCell<_>> so the test can read the wake time recorded inside
+    // the protocol after `Scheduler::run` returns.
     use std::cell::RefCell;
     use std::rc::Rc;
 

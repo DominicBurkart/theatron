@@ -235,10 +235,10 @@ fn channel_resolve_filters_by_time() {
 
 #[test]
 fn channel_late_strong_captures_earlier_weak() {
-    // Weak signal starts first, then a strong signal arrives and captures it.
-    // resolve_at uses end <= time (inclusive), so both TXs resolve at t=80_000:
-    //   weak TX: start=0, dur=80_000 -> ends at 80_000 (included)
-    //   strong TX: start=10_000, dur=60_000 -> ends at 70_000 (included)
+    // Weak signal starts first, strong signal arrives and captures it.
+    // `resolve_at` treats `end <= time` as complete, so at t=80_000:
+    //   weak:   start=0,       ends at 80_000 (included)
+    //   strong: start=10_000,  ends at 70_000 (included)
     let mut ch = Channel::new();
     let weak = tx(7, 868_100_000, 80_000, 8);
     let strong = tx(7, 868_100_000, 60_000, 20);

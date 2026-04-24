@@ -51,7 +51,7 @@ struct Transmission {
 }
 ```
 
-`init`, `on_receive`, and `update` each return `Option<SimTime>` — the next simulation time at which the scheduler must call `update` on this node. Returning `None` means the node has no pending timer. This allows the scheduler to use event-driven dispatch (a priority queue keyed on SimTime) rather than polling every node on every tick.
+`init`, `on_receive`, and `update` each return `Option<SimTime>` — the next simulation time at which the scheduler must call `update` on this node, or `None` if the node has no pending timer. This lets the scheduler use event-driven dispatch (a priority queue keyed on SimTime) instead of polling every node on every tick.
 
 `update` drives timer-based state transitions (e.g. RX1/RX2 window opening in LoRaWAN Class A) without requiring an incoming frame.
 
@@ -105,7 +105,7 @@ The scheduler calls `poll_transmit` on the protocol; the protocol (or its adapte
 
 ### Validation Target: LoRaWAN via lora-rs
 
-LoRaWAN via lora-rs is the first real-world protocol used to prove the simulation engine works with a real stack. The validation example is external to theatron core and comprises three components:
+LoRaWAN via lora-rs is the first real-world protocol used to validate the simulation engine against a production stack. The validation example is external to theatron core and comprises three components:
 
 - **LoRaWAN device adapter**: wraps `lorawan-device::nb_device` to implement the `Protocol` trait
 - **Simulated network server**: responds to joins and schedules downlinks (see below)
