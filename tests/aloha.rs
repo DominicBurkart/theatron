@@ -4,19 +4,13 @@ use theatron::types::{NodeId, RxMetadata, Transmission};
 
 // --- Test helpers ---
 //
-// NOTE: These tests use local `PeriodicSender` / `Receiver` helpers rather than
-// `AlohaNode`/`AlohaReceiver` from `examples/aloha/aloha_node.rs`. This is
-// intentional for now: the example types are compiled only as part of the
-// `aloha` example binary (not as a library), so they cannot be `use`-imported
-// from integration tests without additional crate restructuring.
-//
-// As a result, these tests validate that the *scheduler and channel model*
-// correctly handle ALOHA-like transmission patterns (collision, SF orthogonality,
-// frequency orthogonality, sequential delivery). They do NOT exercise `AlohaNode`
-// end-to-end. Wiring the integration tests to `AlohaNode` is tracked as a
-// follow-up: it requires either moving shared types into the library crate or
-// using `#[path = "../examples/aloha/aloha_node.rs"] mod aloha_node;` (which
-// becomes meaningful once `AlohaNode` has retransmission logic worth testing).
+// These tests exercise the scheduler and channel on ALOHA-like traffic patterns
+// (collision, SF/frequency orthogonality, sequential delivery) using local
+// `PeriodicSender` / `Receiver` helpers. The `AlohaNode` in
+// `examples/aloha/aloha_node.rs` is not imported because example modules are
+// not part of the library crate; wiring it in (via `#[path = ...]` or by
+// moving shared types into the lib) is left for when `AlohaNode` grows
+// retransmission logic worth integration-testing end-to-end.
 
 fn make_tx(payload: Vec<u8>, sf: u8, frequency: u32, duration_us: u64) -> Transmission {
     Transmission {
