@@ -861,7 +861,11 @@ mod tests {
         ch2.begin_transmission(NodeId(10), &tx_a, 0);
         ch2.begin_transmission(NodeId(11), &tx_b, 5_000);
         ch2.resolve_at(55_000);
-        let delivered = ch2.deliver_to(55_000);
+        let delivered: Vec<_> = ch2
+            .drain_completed()
+            .into_iter()
+            .filter(|(_, collided, _, _)| !*collided)
+            .collect();
         assert_eq!(
             delivered.len(),
             0,
