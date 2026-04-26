@@ -2,7 +2,6 @@ mod file_fragmenter;
 mod lorawan_adapter;
 mod network_server;
 mod periodic_interferer;
-mod prng;
 mod simulated_radio;
 
 use theatron::scheduler::Scheduler;
