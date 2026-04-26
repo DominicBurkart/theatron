@@ -69,11 +69,18 @@ pub trait TrafficModel {
 
 /// An interference source can inject transmissions and observe channel events.
 ///
+/// The `observe` method is called when a transmission starts or completes
+/// (carrying a [`ChannelEvent`]).  The `observe_rx` method is called once per
+/// successfully decoded frame — after [`Channel::drain_completed`] resolves
+/// the physical-layer outcome — and receives the full [`RxMetadata`] including
+/// payload, RSSI, and SNR.  This allows implementors to perform passive
+/// eavesdropping as described in the architecture documentation.
+///
 /// # Examples
 ///
 /// ```
 /// use theatron::traits::InterferenceSource;
-/// use theatron::types::{ChannelEvent, Transmission};
+/// use theatron::types::{ChannelEvent, RxMetadata, Transmission};
 ///
 /// struct NullInterferer;
 ///
@@ -88,7 +95,20 @@ pub trait TrafficModel {
 /// assert!(ni.next_poll_time(0).is_none());
 /// ```
 pub trait InterferenceSource {
+    /// Called when a [`ChannelEvent`] (transmission started or completed) is
+    /// emitted by the channel.  The event does **not** carry frame content;
+    /// use [`observe_rx`](InterferenceSource::observe_rx) for that.
     fn observe(&mut self, event: &ChannelEvent, time: SimTime);
+
+    /// Called for each frame that was successfully decoded by at least one
+    /// node, with the resolved [`RxMetadata`] (payload, RSSI, SNR, etc.).
+    /// This is invoked after [`Channel::drain_completed`] so that the full
+    /// physical-layer outcome is available.
+    ///
+    /// The default implementation is a no-op; override it to implement passive
+    /// eavesdropping or reactive jamming based on frame content.
+    fn observe_rx(&mut self, _frame: &RxMetadata, _time: SimTime) {}
+
     fn poll_inject(&mut self, time: SimTime) -> Option<Transmission>;
     fn next_poll_time(&self, current_time: SimTime) -> Option<SimTime>;
 }
