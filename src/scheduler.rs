@@ -5,7 +5,7 @@ use crate::channel::{Channel, CompletedTx};
 use crate::metrics::MetricsCollector;
 use crate::time::SimTime;
 use crate::traits::InterferenceSource;
-use crate::types::{NodeId, RxMetadata, Transmission};
+use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 
 /// A handle to a simulation node, allowing the scheduler to drive it.
 ///
@@ -214,8 +214,7 @@ impl Scheduler {
         }
     }
 
-    fn deliver_completed_to_nodes(&mut self, time: SimTime) {
-        let completed: Vec<CompletedTx> = self.channel.drain_completed();
+    fn deliver_completed_to_nodes(&mut self, completed: Vec<CompletedTx>, time: SimTime) {
         for (sender, collided, captured, frame) in completed {
             if collided {
                 self.metrics.record_collision();
@@ -286,13 +285,18 @@ impl Scheduler {
                     }
                 }
                 EventKind::TxComplete { sender: _ } => {
-                    let completed_events = self.channel.resolve_at(event.time);
-                    for ch_event in &completed_events {
+                    let completed = self.channel.resolve_at(event.time);
+                    for (sender, collided, _, _) in &completed {
+                        let ch_event = ChannelEvent::TransmissionCompleted {
+                            sender: *sender,
+                            time: event.time,
+                            collided: *collided,
+                        };
                         for interferer in &mut self.interferers {
-                            interferer.observe(ch_event, event.time);
+                            interferer.observe(&ch_event, event.time);
                         }
                     }
-                    self.deliver_completed_to_nodes(event.time);
+                    self.deliver_completed_to_nodes(completed, event.time);
                 }
                 EventKind::InterferencePoll { interferer_idx } => {
                     let time = event.time;
