@@ -1,3 +1,7 @@
+#[path = "helpers.rs"]
+mod helpers;
+
+use helpers::{make_tx, make_tx_power};
 use theatron::scheduler::{NodeHandle, Scheduler};
 use theatron::time::SimTime;
 use theatron::types::{NodeId, RxMetadata, Transmission};
@@ -7,36 +11,6 @@ use theatron::types::{NodeId, RxMetadata, Transmission};
 // compile only as part of the `aloha` example binary. They validate the
 // scheduler + channel model for ALOHA-like transmission patterns (collision,
 // SF/frequency orthogonality, capture effect) rather than `AlohaNode` itself.
-
-fn make_tx(payload: Vec<u8>, sf: u8, frequency: u32, duration_us: u64) -> Transmission {
-    Transmission {
-        payload,
-        sf,
-        bandwidth: 125_000,
-        coding_rate: 5,
-        frequency,
-        duration_us,
-        tx_power_dbm: 14,
-    }
-}
-
-fn make_tx_power(
-    payload: Vec<u8>,
-    sf: u8,
-    frequency: u32,
-    duration_us: u64,
-    tx_power_dbm: i8,
-) -> Transmission {
-    Transmission {
-        payload,
-        sf,
-        bandwidth: 125_000,
-        coding_rate: 5,
-        frequency,
-        duration_us,
-        tx_power_dbm,
-    }
-}
 
 /// A node that transmits a fixed number of packets at regular intervals.
 struct PeriodicSender {
