@@ -58,8 +58,21 @@ impl SimulatedRadio {
         }
     }
 
+    /// Consume and return the pending outbound transmission, if any.
+    ///
+    /// Called by `LoRaWanAdapter::poll_transmit` to hand the frame to the
+    /// scheduler channel.
     pub fn take_pending_tx(&mut self) -> Option<Transmission> {
         self.pending_tx.take()
+    }
+
+    /// Return the air-time duration (µs) of the pending outbound transmission
+    /// without consuming it.
+    ///
+    /// Used by the adapter to compute the TxDone wake-up time while leaving
+    /// the `Transmission` available for `poll_transmit`.
+    pub fn pending_tx_duration_us(&self) -> Option<u64> {
+        self.pending_tx.as_ref().map(|t| t.duration_us)
     }
 
     pub fn inject_downlink(&mut self, data: Vec<u8>, sf: u8, frequency: u32) -> bool {
@@ -274,6 +287,19 @@ mod tests {
         assert_eq!(tx.sf, TEST_SF);
         assert_eq!(tx.frequency, TEST_FREQ);
         assert_eq!(tx.payload, &[0x01, 0x02, 0x03]);
+    }
+
+    /// pending_tx_duration_us peeks without consuming.
+    #[test]
+    fn pending_tx_duration_us_peeks_without_consuming() {
+        let mut radio = SimulatedRadio::new();
+        assert_eq!(radio.pending_tx_duration_us(), None);
+        let payload = [0xAB; 10];
+        let _ = radio.handle_event(Event::TxRequest(make_tx_config(), &payload));
+        let dur = radio.pending_tx_duration_us();
+        assert!(dur.is_some(), "should have a duration after TxRequest");
+        // pending_tx must still be intact for poll_transmit
+        assert!(radio.take_pending_tx().is_some(), "take must still work after peek");
     }
 
     /// Phy(TxDone) must return TxDone(timestamp_ms) and restore Idle mode
