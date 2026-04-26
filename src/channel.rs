@@ -1,5 +1,5 @@
 use crate::time::SimTime;
-use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
+use crate::types::{NodeId, RxMetadata, Transmission};
 
 pub type CompletedTx = (NodeId, bool, bool, RxMetadata);
 
@@ -100,7 +100,6 @@ struct ActiveTransmission {
 /// supply custom parameters for other protocols.
 pub struct Channel {
     active: Vec<ActiveTransmission>,
-    completed: Vec<ActiveTransmission>,
     config: ChannelConfig,
 }
 
@@ -136,7 +135,6 @@ impl Channel {
     pub fn with_config(config: ChannelConfig) -> Self {
         Self {
             active: Vec::new(),
-            completed: Vec::new(),
             config,
         }
     }
@@ -208,7 +206,7 @@ impl Channel {
         sender: NodeId,
         tx: &Transmission,
         time: SimTime,
-    ) -> ChannelEvent {
+    ) -> crate::types::ChannelEvent {
         let end = time + tx.duration_us;
         let mut new_collided = false;
         let mut new_captured = false;
@@ -243,7 +241,7 @@ impl Channel {
             tx_power_dbm: tx.tx_power_dbm,
             captured: new_captured && !new_collided,
         });
-        ChannelEvent::TransmissionStarted {
+        crate::types::ChannelEvent::TransmissionStarted {
             sender,
             sf: tx.sf,
             frequency: tx.frequency,
@@ -251,88 +249,8 @@ impl Channel {
         }
     }
 
-    /// Move all active transmissions that ended at or before `time` to the completed list,
-    /// returning a `TransmissionCompleted` event for each.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x01],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// let events = ch.resolve_at(50_000);
-    /// assert_eq!(events.len(), 1);
-    /// ```
-    pub fn resolve_at(&mut self, time: SimTime) -> Vec<ChannelEvent> {
-        let mut events = Vec::new();
-        let mut remaining = Vec::new();
-        for tx in self.active.drain(..) {
-            if tx.end <= time {
-                events.push(ChannelEvent::TransmissionCompleted {
-                    sender: tx.sender,
-                    time: tx.end,
-                    collided: tx.collided,
-                });
-                self.completed.push(tx);
-            } else {
-                remaining.push(tx);
-            }
-        }
-        self.active = remaining;
-        events
-    }
-
-    /// Return all completed, non-collided transmissions as received frames.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x42],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ch.resolve_at(50_000);
-    /// let received = ch.deliver_to(50_000);
-    /// assert_eq!(received.len(), 1);
-    /// assert_eq!(received[0].payload, vec![0x42]);
-    /// ```
-    pub fn deliver_to(&self, time: SimTime) -> Vec<RxMetadata> {
-        self.completed
-            .iter()
-            .filter(|tx| tx.end <= time && !tx.collided)
-            .map(|tx| RxMetadata {
-                payload: tx.payload.clone(),
-                rssi: self.compute_rssi(tx.tx_power_dbm),
-                snr: self.compute_snr(self.compute_rssi(tx.tx_power_dbm)),
-                sf: tx.sf,
-                frequency: tx.frequency,
-                time: tx.end,
-            })
-            .collect()
-    }
-
-    /// Drain and return all completed transmissions as `CompletedTx` tuples.
+    /// Move all active transmissions that ended at or before `time` out of the
+    /// active list and return them as [`CompletedTx`] tuples.
     ///
     /// Each entry is `(sender, collided, captured, RxMetadata)`. RSSI and SNR
     /// are computed from the transmission power and channel parameters.
@@ -354,18 +272,18 @@ impl Channel {
     ///     tx_power_dbm: 14,
     /// };
     /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ch.resolve_at(50_000);
-    /// let completed = ch.drain_completed();
+    /// let completed = ch.resolve_at(50_000);
     /// assert_eq!(completed.len(), 1);
     /// assert_eq!(completed[0].0, NodeId(1));
-    /// assert!(!completed[0].1);
+    /// assert!(!completed[0].1); // not collided
     /// ```
-    pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
+    pub fn resolve_at(&mut self, time: SimTime) -> Vec<CompletedTx> {
         let path_loss_db = self.config.path_loss_db;
         let noise_floor_dbm = self.config.noise_floor_dbm;
-        self.completed
-            .drain(..)
-            .map(|tx| {
+        let mut completed = Vec::new();
+        let mut remaining = Vec::new();
+        for tx in self.active.drain(..) {
+            if tx.end <= time {
                 let rssi = tx.tx_power_dbm as f32 - path_loss_db;
                 let snr = rssi - noise_floor_dbm;
                 let metadata = RxMetadata {
@@ -376,9 +294,13 @@ impl Channel {
                     frequency: tx.frequency,
                     time: tx.end,
                 };
-                (tx.sender, tx.collided, tx.captured, metadata)
-            })
-            .collect()
+                completed.push((tx.sender, tx.collided, tx.captured, metadata));
+            } else {
+                remaining.push(tx);
+            }
+        }
+        self.active = remaining;
+        completed
     }
 }
 
@@ -419,8 +341,8 @@ mod tests {
         let mut ch = Channel::default();
         let tx = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx, 0);
-        ch.resolve_at(50_000);
-        assert_eq!(ch.drain_completed().len(), 1);
+        let completed = ch.resolve_at(50_000);
+        assert_eq!(completed.len(), 1);
     }
 
     #[test]
@@ -428,10 +350,10 @@ mod tests {
         let mut ch = Channel::new();
         let tx = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx, 0);
-        ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(50_000);
+        let completed = ch.resolve_at(50_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
+        assert_eq!(delivered[0].3.payload, vec![0x01, 0x02]);
     }
 
     #[test]
@@ -441,8 +363,8 @@ mod tests {
         let tx2 = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 0);
     }
 
@@ -453,8 +375,8 @@ mod tests {
         let tx2 = make_tx(8, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 2);
     }
 
@@ -465,8 +387,8 @@ mod tests {
         let tx2 = make_tx(7, 868_300_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 2);
     }
 
@@ -477,10 +399,9 @@ mod tests {
         let tx2 = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.resolve_at(50_000);
-        ch.drain_completed();
         ch.begin_transmission(NodeId(2), &tx2, 60_000);
-        ch.resolve_at(110_000);
-        let delivered = ch.deliver_to(110_000);
+        let completed = ch.resolve_at(110_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 1);
     }
 
@@ -491,10 +412,8 @@ mod tests {
         let tx2 = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.resolve_at(50_000);
-        ch.drain_completed();
         ch.begin_transmission(NodeId(2), &tx2, 50_000);
-        ch.resolve_at(100_000);
-        let completed = ch.drain_completed();
+        let completed = ch.resolve_at(100_000);
         assert!(completed.iter().all(|(_, collided, _, _)| !collided));
     }
 
@@ -505,8 +424,7 @@ mod tests {
             let tx = make_tx(7, 868_100_000, 50_000);
             ch.begin_transmission(NodeId(i), &tx, 10_000 * (i as u64 - 1));
         }
-        ch.resolve_at(70_000);
-        let completed = ch.drain_completed();
+        let completed = ch.resolve_at(70_000);
         assert_eq!(completed.len(), 3);
         assert!(completed.iter().all(|(_, collided, _, _)| *collided));
     }
@@ -518,10 +436,10 @@ mod tests {
         let weak = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &strong, 0);
         ch.begin_transmission(NodeId(2), &weak, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
+        assert_eq!(delivered[0].3.payload, vec![0x01, 0x02]);
     }
 
     #[test]
@@ -531,8 +449,7 @@ mod tests {
         let weak = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &strong, 0);
         ch.begin_transmission(NodeId(2), &weak, 10_000);
-        ch.resolve_at(60_000);
-        let completed = ch.drain_completed();
+        let completed = ch.resolve_at(60_000);
         let strong_entry = completed
             .iter()
             .find(|(id, _, _, _)| *id == NodeId(1))
@@ -553,8 +470,8 @@ mod tests {
         let tx2 = make_tx_power(7, 868_100_000, 50_000, 9);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 0, "delta=5 < threshold=6 → both collide");
     }
 
@@ -565,8 +482,8 @@ mod tests {
         let tx2 = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(
             delivered.len(),
             1,
@@ -583,14 +500,13 @@ mod tests {
         ch.begin_transmission(NodeId(1), &strong, 0);
         ch.begin_transmission(NodeId(2), &medium, 5_000);
         ch.begin_transmission(NodeId(3), &weak, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(
             delivered.len(),
             1,
             "only strongest survives three-way collision"
         );
-        let completed = ch.drain_completed();
         let strong_entry = completed
             .iter()
             .find(|(id, _, _, _)| *id == NodeId(1))
@@ -605,8 +521,8 @@ mod tests {
         let tx2 = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
-        ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.resolve_at(60_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 0, "delta=6 < threshold=10 → both collide");
     }
 
@@ -615,11 +531,11 @@ mod tests {
         let mut ch = Channel::new();
         let tx = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &tx, 0);
-        ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(50_000);
+        let completed = ch.resolve_at(50_000);
+        let delivered: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
         assert_eq!(delivered.len(), 1);
-        assert!((delivered[0].rssi - (14.0_f32 - 100.0)).abs() < 0.001);
-        assert!((delivered[0].snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
+        assert!((delivered[0].3.rssi - (14.0_f32 - 100.0)).abs() < 0.001);
+        assert!((delivered[0].3.snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
     }
 
     // --- ChannelConfig tests ---
@@ -662,21 +578,25 @@ mod tests {
 
         let tx = make_tx_power(7, 868_100_000, 50_000, 14);
 
-        for ch in [&mut ch_lora, &mut ch_short_range] {
-            ch.begin_transmission(NodeId(1), &tx, 0);
-            ch.resolve_at(50_000);
-        }
+        let lora_completed = {
+            ch_lora.begin_transmission(NodeId(1), &tx, 0);
+            ch_lora.resolve_at(50_000)
+        };
+        let short_completed = {
+            ch_short_range.begin_transmission(NodeId(1), &tx, 0);
+            ch_short_range.resolve_at(50_000)
+        };
 
-        let lora_rx = ch_lora.deliver_to(50_000);
-        let short_rx = ch_short_range.deliver_to(50_000);
+        let lora_rx: Vec<_> = lora_completed.iter().filter(|(_, c, _, _)| !c).collect();
+        let short_rx: Vec<_> = short_completed.iter().filter(|(_, c, _, _)| !c).collect();
 
         assert_eq!(lora_rx.len(), 1);
         assert_eq!(short_rx.len(), 1);
         assert!(
-            short_rx[0].rssi > lora_rx[0].rssi,
+            short_rx[0].3.rssi > lora_rx[0].3.rssi,
             "lower path loss must yield higher RSSI: short_range={} lora={}",
-            short_rx[0].rssi,
-            lora_rx[0].rssi,
+            short_rx[0].3.rssi,
+            lora_rx[0].3.rssi,
         );
     }
 
@@ -693,21 +613,25 @@ mod tests {
 
         let tx = make_tx_power(7, 868_100_000, 50_000, 14);
 
-        for ch in [&mut ch_lora, &mut ch_quiet] {
-            ch.begin_transmission(NodeId(1), &tx, 0);
-            ch.resolve_at(50_000);
-        }
+        let lora_completed = {
+            ch_lora.begin_transmission(NodeId(1), &tx, 0);
+            ch_lora.resolve_at(50_000)
+        };
+        let quiet_completed = {
+            ch_quiet.begin_transmission(NodeId(1), &tx, 0);
+            ch_quiet.resolve_at(50_000)
+        };
 
-        let lora_rx = ch_lora.deliver_to(50_000);
-        let quiet_rx = ch_quiet.deliver_to(50_000);
+        let lora_rx: Vec<_> = lora_completed.iter().filter(|(_, c, _, _)| !c).collect();
+        let quiet_rx: Vec<_> = quiet_completed.iter().filter(|(_, c, _, _)| !c).collect();
 
         assert_eq!(lora_rx.len(), 1);
         assert_eq!(quiet_rx.len(), 1);
         assert!(
-            quiet_rx[0].snr > lora_rx[0].snr,
+            quiet_rx[0].3.snr > lora_rx[0].3.snr,
             "lower noise floor must yield higher SNR: quiet={} lora={}",
-            quiet_rx[0].snr,
-            lora_rx[0].snr,
+            quiet_rx[0].3.snr,
+            lora_rx[0].3.snr,
         );
     }
 
@@ -727,14 +651,16 @@ mod tests {
         let strong = make_tx_power(7, 868_100_000, 50_000, 20);
         let weak = make_tx_power(7, 868_100_000, 50_000, 14);
 
-        for ch in [&mut ch_lora, &mut ch_strict] {
-            ch.begin_transmission(NodeId(1), &strong, 0);
-            ch.begin_transmission(NodeId(2), &weak, 10_000);
-            ch.resolve_at(60_000);
-        }
+        ch_lora.begin_transmission(NodeId(1), &strong, 0);
+        ch_lora.begin_transmission(NodeId(2), &weak, 10_000);
+        let lora_completed = ch_lora.resolve_at(60_000);
 
-        let lora_rx = ch_lora.deliver_to(60_000);
-        let strict_rx = ch_strict.deliver_to(60_000);
+        ch_strict.begin_transmission(NodeId(1), &strong, 0);
+        ch_strict.begin_transmission(NodeId(2), &weak, 10_000);
+        let strict_completed = ch_strict.resolve_at(60_000);
+
+        let lora_rx: Vec<_> = lora_completed.iter().filter(|(_, c, _, _)| !c).collect();
+        let strict_rx: Vec<_> = strict_completed.iter().filter(|(_, c, _, _)| !c).collect();
 
         assert_eq!(
             lora_rx.len(),
@@ -759,8 +685,7 @@ mod tests {
             for _ in 0..n {
                 let tx = make_tx(7, 868_100_000, duration);
                 ch.begin_transmission(NodeId(1), &tx, t);
-                ch.resolve_at(t + duration);
-                let completed = ch.drain_completed();
+                let completed = ch.resolve_at(t + duration);
                 if completed.iter().any(|(_, collided, _, _)| *collided) {
                     all_clean = false;
                     break;
@@ -778,8 +703,7 @@ mod tests {
                 let tx = make_tx(7, 868_100_000, duration);
                 ch.begin_transmission(NodeId(i as u32), &tx, 0);
             }
-            ch.resolve_at(duration);
-            let completed = ch.drain_completed();
+            let completed = ch.resolve_at(duration);
             prop_assert_eq!(completed.len(), n);
             prop_assert!(completed.iter().all(|(_, collided, _, _)| *collided));
         }
@@ -793,8 +717,7 @@ mod tests {
             let tx_b = make_tx(sf_b, 868_100_000, duration);
             ch.begin_transmission(NodeId(1), &tx_a, 0);
             ch.begin_transmission(NodeId(2), &tx_b, 0);
-            ch.resolve_at(duration);
-            let completed = ch.drain_completed();
+            let completed = ch.resolve_at(duration);
             prop_assert!(completed.iter().all(|(_, collided, _, _)| !collided));
         }
     }
