@@ -7,10 +7,40 @@ use theatron::types::Transmission;
 const RX_WINDOW_DURATION_MS: u32 = 1000;
 const RX_WINDOW_OFFSET_MS: i32 = 0;
 
+/// The current operating mode of the simulated radio.
+///
+/// Mirrors the `RadioMode` sketch in ARCHITECTURE.md so that the TX lifecycle
+/// is a proper two-step sequence:
+///   1. `TxRequest`  → mode transitions to `Txing`, radio returns `Response::Txing`
+///   2. `Phy(SimPhyEvent::TxDone { timestamp_ms })` → mode returns to `Idle`,
+///      radio returns `Response::TxDone(timestamp_ms)`
+#[derive(Debug, Clone)]
+pub enum RadioMode {
+    Idle,
+    Txing { config: TxConfig },
+    Rxing { config: RfConfig },
+}
+
+/// Physical-layer events that the simulation delivers to the radio via
+/// `Event::Phy(SimPhyEvent::...)`.
+///
+/// - `TxDone { timestamp_ms }`: the channel has finished transmitting the
+///   in-flight frame.  The adapter calls this after the scheduler fires a
+///   `TxComplete` event for the node.
+/// - `RxDone`: a downlink has been injected into the receive buffer via
+///   [`SimulatedRadio::inject_downlink`] and the radio should deliver
+///   `Response::RxDone` to the lorawan-device state machine.
+#[derive(Debug, Clone)]
+pub enum SimPhyEvent {
+    TxDone { timestamp_ms: u32 },
+    RxDone,
+}
+
 #[derive(Debug)]
 pub struct SimulatedRadio {
     rx_buf: [u8; 256],
     rx_len: usize,
+    mode: RadioMode,
     pending_tx: Option<Transmission>,
     pending_downlink: Option<Vec<u8>>,
     current_rx_config: Option<RfConfig>,
@@ -21,14 +51,28 @@ impl SimulatedRadio {
         Self {
             rx_buf: [0u8; 256],
             rx_len: 0,
+            mode: RadioMode::Idle,
             pending_tx: None,
             pending_downlink: None,
             current_rx_config: None,
         }
     }
 
+    /// Consume and return the pending outbound transmission, if any.
+    ///
+    /// Called by `LoRaWanAdapter::poll_transmit` to hand the frame to the
+    /// scheduler channel.
     pub fn take_pending_tx(&mut self) -> Option<Transmission> {
         self.pending_tx.take()
+    }
+
+    /// Return the air-time duration (µs) of the pending outbound transmission
+    /// without consuming it.
+    ///
+    /// Used by the adapter to compute the TxDone wake-up time while leaving
+    /// the `Transmission` available for `poll_transmit`.
+    pub fn pending_tx_duration_us(&self) -> Option<u64> {
+        self.pending_tx.as_ref().map(|t| t.duration_us)
     }
 
     pub fn inject_downlink(&mut self, data: Vec<u8>, sf: u8, frequency: u32) -> bool {
@@ -52,6 +96,12 @@ impl SimulatedRadio {
     pub fn has_pending_downlink(&self) -> bool {
         self.pending_downlink.is_some()
     }
+
+    /// Returns a reference to the current radio mode.
+    #[allow(dead_code)]
+    pub fn mode(&self) -> &RadioMode {
+        &self.mode
+    }
 }
 
 impl Default for SimulatedRadio {
@@ -65,7 +115,7 @@ fn compute_duration_us(bb: &BaseBandModulationParams, payload_len: usize) -> u64
 }
 
 impl PhyRxTx for SimulatedRadio {
-    type PhyEvent = ();
+    type PhyEvent = SimPhyEvent;
     type PhyError = &'static str;
     type PhyResponse = ();
 
@@ -89,7 +139,7 @@ impl PhyRxTx for SimulatedRadio {
                 let TxConfig {
                     pw,
                     rf: RfConfig { frequency, bb, .. },
-                } = tx_config;
+                } = tx_config.clone();
                 let payload = buf.to_vec();
                 let duration_us = compute_duration_us(&bb, payload.len());
                 self.pending_tx = Some(Transmission {
@@ -101,17 +151,34 @@ impl PhyRxTx for SimulatedRadio {
                     duration_us,
                     tx_power_dbm: pw,
                 });
-                Ok(Response::TxDone(0))
+                // Two-step TX lifecycle per ARCHITECTURE.md:
+                // step 1 — transition to Txing and return Response::Txing.
+                // step 2 — caller delivers Phy(SimPhyEvent::TxDone { timestamp_ms })
+                //           once the channel has finished the transmission.
+                self.mode = RadioMode::Txing { config: tx_config };
+                Ok(Response::Txing)
             }
             Event::RxRequest(rf_config) => {
-                self.current_rx_config = Some(rf_config);
+                self.current_rx_config = Some(rf_config.clone());
+                self.mode = RadioMode::Rxing { config: rf_config };
                 Ok(Response::Rxing)
             }
             Event::CancelRx => {
                 self.current_rx_config = None;
+                self.mode = RadioMode::Idle;
                 Ok(Response::Idle)
             }
-            Event::Phy(()) => {
+            Event::Phy(SimPhyEvent::TxDone { timestamp_ms }) => {
+                // Step 2 of the two-step TX lifecycle: the channel has finished
+                // transmitting.  Return to Idle and report the TX timestamp.
+                self.mode = RadioMode::Idle;
+                Ok(Response::TxDone(timestamp_ms))
+            }
+            Event::Phy(SimPhyEvent::RxDone) => {
+                // A downlink was injected via inject_downlink; signal RxDone
+                // so lorawan-device can read get_received_packet().
+                self.mode = RadioMode::Idle;
+                self.current_rx_config = None;
                 if self.pending_downlink.take().is_some() {
                     Ok(Response::RxDone(RxQuality::new(-80, 10)))
                 } else {
@@ -152,6 +219,13 @@ mod tests {
         }
     }
 
+    fn make_tx_config() -> TxConfig {
+        TxConfig {
+            pw: 14,
+            rf: make_rf(),
+        }
+    }
+
     #[test]
     fn new_radio_no_pending_tx() {
         let mut radio = SimulatedRadio::new();
@@ -162,6 +236,12 @@ mod tests {
     fn new_radio_no_pending_downlink() {
         let radio = SimulatedRadio::new();
         assert!(!radio.has_pending_downlink());
+    }
+
+    #[test]
+    fn new_radio_mode_is_idle() {
+        let radio = SimulatedRadio::new();
+        assert!(matches!(radio.mode(), RadioMode::Idle));
     }
 
     #[test]
@@ -180,20 +260,77 @@ mod tests {
         assert_eq!(radio.get_received_packet(), &[0x01, 0x02, 0x03]);
     }
 
+    /// TxRequest must return Txing (step 1 of the two-step TX lifecycle).
     #[test]
-    fn tx_request_populates_pending_tx() {
+    fn tx_request_returns_txing() {
         let mut radio = SimulatedRadio::new();
-        let tx_config = TxConfig {
-            pw: 14,
-            rf: make_rf(),
-        };
         let payload = [0x01, 0x02, 0x03];
-        let result = radio.handle_event(Event::TxRequest(tx_config, &payload));
-        assert!(result.is_ok());
+        let result = radio.handle_event(Event::TxRequest(make_tx_config(), &payload));
+        assert!(
+            matches!(result, Ok(Response::Txing)),
+            "TxRequest must return Response::Txing, got {:?}",
+            result
+        );
+    }
+
+    /// After TxRequest the mode must be Txing and pending_tx must be set.
+    #[test]
+    fn tx_request_sets_txing_mode_and_pending_tx() {
+        let mut radio = SimulatedRadio::new();
+        let payload = [0x01, 0x02, 0x03];
+        let _ = radio.handle_event(Event::TxRequest(make_tx_config(), &payload));
+        assert!(
+            matches!(radio.mode(), RadioMode::Txing { .. }),
+            "mode must be Txing after TxRequest"
+        );
         let tx = radio.take_pending_tx().expect("should have pending tx");
         assert_eq!(tx.sf, TEST_SF);
         assert_eq!(tx.frequency, TEST_FREQ);
         assert_eq!(tx.payload, &[0x01, 0x02, 0x03]);
+    }
+
+    /// pending_tx_duration_us peeks without consuming.
+    #[test]
+    fn pending_tx_duration_us_peeks_without_consuming() {
+        let mut radio = SimulatedRadio::new();
+        assert_eq!(radio.pending_tx_duration_us(), None);
+        let payload = [0xAB; 10];
+        let _ = radio.handle_event(Event::TxRequest(make_tx_config(), &payload));
+        let dur = radio.pending_tx_duration_us();
+        assert!(dur.is_some(), "should have a duration after TxRequest");
+        // pending_tx must still be intact for poll_transmit
+        assert!(radio.take_pending_tx().is_some(), "take must still work after peek");
+    }
+
+    /// Phy(TxDone) must return TxDone(timestamp_ms) and restore Idle mode
+    /// (step 2 of the two-step TX lifecycle).
+    #[test]
+    fn phy_tx_done_returns_tx_done_with_timestamp() {
+        let mut radio = SimulatedRadio::new();
+        let payload = [0xAB];
+        let _ = radio.handle_event(Event::TxRequest(make_tx_config(), &payload));
+        // simulate scheduler delivering TxDone at t=5000 ms
+        let result = radio.handle_event(Event::Phy(SimPhyEvent::TxDone { timestamp_ms: 5000 }));
+        assert!(
+            matches!(result, Ok(Response::TxDone(5000))),
+            "Phy(TxDone) must return Response::TxDone(timestamp_ms), got {:?}",
+            result
+        );
+        assert!(
+            matches!(radio.mode(), RadioMode::Idle),
+            "mode must return to Idle after TxDone"
+        );
+    }
+
+    #[test]
+    fn rx_request_sets_rxing_mode() {
+        let mut radio = SimulatedRadio::new();
+        let result = radio.handle_event(Event::RxRequest(make_rf()));
+        assert!(matches!(result, Ok(Response::Rxing)));
+        assert!(
+            matches!(radio.mode(), RadioMode::Rxing { .. }),
+            "mode must be Rxing after RxRequest"
+        );
     }
 
     #[test]
@@ -203,22 +340,24 @@ mod tests {
         assert!(matches!(result, Ok(Response::Rxing)));
         let result = radio.handle_event(Event::CancelRx);
         assert!(matches!(result, Ok(Response::Idle)));
+        assert!(matches!(radio.mode(), RadioMode::Idle));
     }
 
     #[test]
-    fn phy_with_downlink_returns_rx_done() {
+    fn phy_rx_done_with_downlink_returns_rx_done() {
         let mut radio = SimulatedRadio::new();
         // Enter RX mode and inject downlink
         let _ = radio.handle_event(Event::RxRequest(make_rf()));
         assert!(radio.inject_downlink(vec![0xAB], TEST_SF, TEST_FREQ));
-        let result = radio.handle_event(Event::Phy(()));
+        let result = radio.handle_event(Event::Phy(SimPhyEvent::RxDone));
         assert!(matches!(result, Ok(Response::RxDone(_))));
+        assert!(matches!(radio.mode(), RadioMode::Idle));
     }
 
     #[test]
-    fn phy_without_downlink_returns_idle() {
+    fn phy_rx_done_without_downlink_returns_idle() {
         let mut radio = SimulatedRadio::new();
-        let result = radio.handle_event(Event::Phy(()));
+        let result = radio.handle_event(Event::Phy(SimPhyEvent::RxDone));
         assert!(matches!(result, Ok(Response::Idle)));
     }
 
