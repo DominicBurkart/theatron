@@ -107,121 +107,30 @@ The scheduler calls `poll_transmit` on the protocol; the protocol (or its adapte
 
 LoRaWAN via lora-rs is the first real-world protocol used to prove the simulation engine works with a real stack. The validation example is external to theatron core and comprises three components:
 
-- **LoRaWAN device adapter**: wraps `lorawan-device::nb_device` to implement the `Protocol` trait
-- **Simulated network server**: responds to joins and schedules downlinks (see below)
-- **SimulatedRadio**: bridges the adapter to theatron's channel
+- **LoRaWAN device adapter**: wraps `lorawan-device::nb_device` to implement the `Protocol` trait (see [`examples/lorawan_file_transfer/lorawan_adapter.rs`](examples/lorawan_file_transfer/lorawan_adapter.rs))
+- **Simulated network server**: responds to joins and schedules downlinks (see [`examples/lorawan_file_transfer/network_server.rs`](examples/lorawan_file_transfer/network_server.rs))
+- **SimulatedRadio**: bridges the adapter to theatron's channel (see [`examples/lorawan_file_transfer/simulated_radio.rs`](examples/lorawan_file_transfer/simulated_radio.rs))
 
 The validation example uses:
 
 - **`lorawan`**: frame parsing and creation, MIC verification, MAC command handling. `RxMetadata.payload` and `Transmission.payload` are raw bytes parsed via `lorawan::parser::PhyPayload`.
-- **`lorawan-device`**: real Class A state machine via `nb_device`. The adapter drives it by implementing `lorawan_device::nb_device::radio::PhyRxTx` on a `SimulatedRadio` struct that bridges to the simulated channel.
+- **`lorawan-device`**: real Class A state machine via `nb_device`. The adapter drives it by implementing `lorawan_device::nb_device::radio::PhyRxTx` on `SimulatedRadio`, which bridges to the simulated channel.
 - **`lora-modulation`**: SF, bandwidth, and time-on-air calculations. Used in the channel model and energy-efficiency metrics.
 
-#### `nb_device::radio::PhyRxTx` — the actual interface
+#### `nb_device::radio::PhyRxTx` — the radio interface
 
-`lorawan-device`'s `nb_device` module exposes an event-driven radio trait, not a polling interface. `SimulatedRadio` implements this trait:
-
-```rust
-pub trait PhyRxTx {
-    type PhyEvent: fmt::Debug;
-    type PhyError: fmt::Debug;
-    type PhyResponse: fmt::Debug;
-
-    const ANTENNA_GAIN: i8 = 0;
-    const MAX_RADIO_POWER: u8;
-
-    fn get_mut_radio(&mut self) -> &mut Self;
-    fn get_received_packet(&mut self) -> &mut [u8];
-    fn handle_event(
-        &mut self,
-        event: radio::Event<'_, Self>,
-    ) -> Result<radio::Response<Self>, Self::PhyError>
-    where
-        Self: Sized;
-}
-```
+`lorawan-device`'s `nb_device` module exposes an event-driven radio trait. `SimulatedRadio` implements this trait; see [`examples/lorawan_file_transfer/simulated_radio.rs`](examples/lorawan_file_transfer/simulated_radio.rs) for the full implementation.
 
 Events: `TxRequest(TxConfig, &[u8])`, `RxRequest(RxConfig)`, `CancelRx`, `Phy(PhyEvent)`.
 Responses: `Idle`, `Txing`, `TxDone(ms)`, `Rxing`, `RxDone(RxQuality)`.
 
 The state machine calls `handle_event(TxRequest(...))` to initiate a transmission; the radio responds `Txing`, then on the next `Phy(...)` event responds `TxDone(timestamp_ms)`. For RX: `handle_event(RxRequest(...))` → `Rxing`, then when a frame arrives → `RxDone(quality)`, and the state machine reads bytes via `get_received_packet()`.
 
-#### SimulatedRadio sketch
-
-`SimulatedRadio` maintains an internal receive buffer and an RX-mode flag. theatron's channel pushes received frames into the buffer when the radio is in RX mode; frames arriving when the radio is not listening are dropped (physically correct behavior).
-
-```rust
-struct SimulatedRadio {
-    channel: Arc<Mutex<Channel>>,
-    node_id: NodeId,
-    rx_buf: [u8; 256],
-    rx_len: usize,
-    mode: RadioMode,
-}
-
-enum RadioMode { Idle, Txing { config: TxConfig }, Rxing { config: RxConfig } }
-
-impl PhyRxTx for SimulatedRadio {
-    type PhyEvent = SimPhyEvent;
-    type PhyError = SimRadioError;
-    type PhyResponse = SimPhyResponse;
-
-    const MAX_RADIO_POWER: u8 = 22;
-
-    fn get_mut_radio(&mut self) -> &mut Self { self }
-
-    fn get_received_packet(&mut self) -> &mut [u8] {
-        &mut self.rx_buf[..self.rx_len]
-    }
-
-    fn handle_event(
-        &mut self,
-        event: radio::Event<'_, Self>,
-    ) -> Result<radio::Response<Self>, Self::PhyError> {
-        match event {
-            radio::Event::TxRequest(config, buf) => {
-                self.mode = RadioMode::Txing { config };
-                self.channel.lock().unwrap().enqueue_tx(self.node_id, config, buf);
-                Ok(radio::Response::Txing)
-            }
-            radio::Event::RxRequest(config) => {
-                self.mode = RadioMode::Rxing { config };
-                Ok(radio::Response::Rxing)
-            }
-            radio::Event::CancelRx => {
-                self.mode = RadioMode::Idle;
-                Ok(radio::Response::Idle)
-            }
-            radio::Event::Phy(SimPhyEvent::TxDone { timestamp_ms }) => {
-                self.mode = RadioMode::Idle;
-                Ok(radio::Response::TxDone(timestamp_ms))
-            }
-            radio::Event::Phy(SimPhyEvent::RxDone { quality, payload }) => {
-                self.rx_len = payload.len().min(self.rx_buf.len());
-                self.rx_buf[..self.rx_len].copy_from_slice(&payload[..self.rx_len]);
-                self.mode = RadioMode::Idle;
-                Ok(radio::Response::RxDone(quality))
-            }
-        }
-    }
-}
-```
-
-The `lorawan-device` state machine calls `handle_event` on `SimulatedRadio`; theatron's scheduler delivers simulated radio events (TX completion, RX frame arrival) by calling `device.handle_event(Event::RadioEvent(phy_event))` on the adapter state.
-
 #### Adapter state ownership
 
-`lorawan-device::nb_device::Device<R, RNG, N, D>` bundles the radio, RNG, and MAC state into a single struct. The adapter's `Protocol::State` wraps it along with bookkeeping theatron needs:
+`lorawan-device::nb_device::Device<R, RNG, N, D>` bundles the radio, RNG, and MAC state into a single struct. The adapter's state wraps it along with bookkeeping theatron needs; see [`examples/lorawan_file_transfer/lorawan_adapter.rs`](examples/lorawan_file_transfer/lorawan_adapter.rs) for the current implementation.
 
-```rust
-struct LorawanState {
-    device: nb_device::Device<SimulatedRadio, Prng, 256, 1>,
-    pending_tx: Option<Transmission>,
-    next_wake: Option<SimTime>,
-}
-```
-
-`pending_tx` is populated when the device issues a `TxRequest` through `SimulatedRadio::handle_event`. `next_wake` is updated from `nb_device::Response::TimeoutRequest(ms)` and returned from the adapter's `Protocol` methods as `Option<SimTime>`. Since `device` is inside `&mut LorawanState`, mutable access flows correctly through all `Protocol` method signatures.
+`pending_timeout_ms` is populated when the device issues a `TxRequest` through `SimulatedRadio::handle_event`. The next wake time is updated from `nb_device::Response::TimeoutRequest(ms)` and returned from the adapter's `Protocol` methods as `Option<SimTime>`.
 
 #### Timer contract
 
@@ -312,11 +221,11 @@ To ground simulations in real-world conditions, theatron may include tooling for
 
 ## Key Design Decisions (open for discussion)
 
-### Sync vs async
+### Sync vs. async
 
 **Proposal: sync.** The simulation engine controls time explicitly — there is no benefit to async here, and async adds complexity. Each node's `poll_transmit` is called by the scheduler in deterministic order. `lorawan-device::nb_device` is the correct integration target (not `async_device`) for the same reason. Revisit if we need to model real-time wall-clock behavior.
 
-### Discrete-event vs continuous time
+### Discrete-event vs. continuous time
 
 **Proposal: discrete-event.** Wireless symbol timing (e.g. LoRa) is discrete at the physical layer. Discrete-event simulation is simpler to reason about, deterministic, and fast. Continuous time adds little value for MAC-level analysis.
 
