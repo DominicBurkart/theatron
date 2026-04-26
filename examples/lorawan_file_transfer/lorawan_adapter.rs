@@ -8,8 +8,8 @@ use theatron::traits::TrafficModel;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
 use crate::file_fragmenter::FileFragmenter;
-use crate::prng::Xorshift64;
 use crate::simulated_radio::SimulatedRadio;
+use theatron::prng::Xorshift64;
 
 const BUF_SIZE: usize = 255;
 
