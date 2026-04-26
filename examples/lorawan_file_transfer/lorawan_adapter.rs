@@ -9,7 +9,7 @@ use theatron::types::{NodeId, RxMetadata, Transmission};
 
 use crate::file_fragmenter::FileFragmenter;
 use crate::prng::Xorshift64;
-use crate::simulated_radio::SimulatedRadio;
+use crate::simulated_radio::{SimPhyEvent, SimulatedRadio};
 
 const BUF_SIZE: usize = 255;
 
@@ -18,6 +18,10 @@ pub struct LoRaWanAdapter {
     device: Device<SimulatedRadio, Xorshift64, BUF_SIZE>,
     fragmenter: FileFragmenter,
     pending_timeout_ms: Option<u32>,
+    /// Absolute simulation time (µs) at which the in-flight TX finishes.
+    /// Set when lorawan-device responds with `Response::Txing`; cleared once
+    /// `Phy(TxDone)` has been delivered to the device.
+    tx_end_time: Option<SimTime>,
     tx_start_time: SimTime,
     joined: bool,
 }
@@ -42,6 +46,7 @@ impl LoRaWanAdapter {
             device,
             fragmenter,
             pending_timeout_ms: None,
+            tx_end_time: None,
             tx_start_time: 0,
             joined: true,
         }
@@ -51,6 +56,12 @@ impl LoRaWanAdapter {
         self.tx_start_time + ms as u64 * 1_000
     }
 
+    /// Compute the simulation timestamp (in ms) at which a TX that started at
+    /// `start_us` with duration `duration_us` completes.
+    fn tx_done_timestamp_ms(start_us: SimTime, duration_us: u64) -> u32 {
+        ((start_us + duration_us) / 1_000) as u32
+    }
+
     fn try_send_fragment(&mut self, time: SimTime) -> Option<SimTime> {
         if !self.joined || !self.device.ready_to_send_data() {
             return self.fragmenter.next_available_time(time);
@@ -58,6 +69,28 @@ impl LoRaWanAdapter {
         if let Some(payload) = self.fragmenter.next_payload(time) {
             self.tx_start_time = time;
             match self.device.send(&payload, 1, false) {
+                Ok(Response::Txing) => {
+                    // Step 1 of the two-step TX lifecycle: lorawan-device has
+                    // handed the frame to SimulatedRadio, which has stored it
+                    // in pending_tx.  The scheduler will pick it up via
+                    // poll_transmit and fire a TxComplete event at
+                    // time + duration_us.  We compute that moment now so we
+                    // can schedule a wake-up and deliver TxDone (step 2).
+                    if let Some(tx) = self.device.get_radio().take_pending_tx() {
+                        let end_us = time + tx.duration_us;
+                        self.tx_end_time = Some(end_us);
+                        // Put the transmission back so poll_transmit can
+                        // hand it to the scheduler channel.
+                        // We use a private shim: re-inject it through the
+                        // radio's pending_tx field via the public accessor
+                        // pattern already provided.
+                        self.device.get_radio().set_pending_tx(tx);
+                        Some(end_us)
+                    } else {
+                        None
+                    }
+                }
+                // Defensive: older behaviour or unexpected response.
                 Ok(Response::TimeoutRequest(ms)) => {
                     self.pending_timeout_ms = Some(ms);
                     Some(self.wake_from_timeout(ms))
@@ -84,7 +117,7 @@ impl NodeHandle for LoRaWanAdapter {
         match self
             .device
             .handle_event(lorawan_device::nb_device::Event::RadioEvent(
-                RadioEvent::Phy(()),
+                RadioEvent::Phy(SimPhyEvent::RxDone),
             )) {
             Ok(Response::TimeoutRequest(ms)) => {
                 self.pending_timeout_ms = Some(ms);
@@ -104,6 +137,28 @@ impl NodeHandle for LoRaWanAdapter {
     }
 
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
+        // Step 2 of the two-step TX lifecycle: if we have reached the end of
+        // an in-flight TX, deliver Phy(TxDone) to lorawan-device so it can
+        // open its RX windows.
+        if let Some(end_us) = self.tx_end_time {
+            if time >= end_us {
+                self.tx_end_time = None;
+                let timestamp_ms = (end_us / 1_000) as u32;
+                match self
+                    .device
+                    .handle_event(lorawan_device::nb_device::Event::RadioEvent(
+                        RadioEvent::Phy(SimPhyEvent::TxDone { timestamp_ms }),
+                    )) {
+                    Ok(Response::TimeoutRequest(ms)) => {
+                        self.pending_timeout_ms = Some(ms);
+                        return Some(self.wake_from_timeout(ms));
+                    }
+                    Ok(_) => return None,
+                    Err(_) => return None,
+                }
+            }
+        }
+
         if let Some(_timeout_ms) = self.pending_timeout_ms.take() {
             match self
                 .device
