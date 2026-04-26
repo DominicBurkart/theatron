@@ -4,6 +4,10 @@
 //! gaps identified through coverage analysis: channel edge cases, scheduler
 //! ordering invariants, metrics isolation, and time conversion edge cases.
 
+#[path = "helpers.rs"]
+mod helpers;
+
+use helpers::{tx, tx_with_payload};
 use theatron::channel::Channel;
 use theatron::metrics::MetricsCollector;
 use theatron::scheduler::{NodeHandle, Scheduler};
@@ -16,30 +20,6 @@ use proptest::prelude::*;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn tx(sf: u8, freq: u32, dur: u64, power: i8) -> Transmission {
-    Transmission {
-        payload: vec![0xAA],
-        sf,
-        bandwidth: 125_000,
-        coding_rate: 5,
-        frequency: freq,
-        duration_us: dur,
-        tx_power_dbm: power,
-    }
-}
-
-fn tx_with_payload(payload: Vec<u8>, sf: u8, freq: u32, dur: u64, power: i8) -> Transmission {
-    Transmission {
-        payload,
-        sf,
-        bandwidth: 125_000,
-        coding_rate: 5,
-        frequency: freq,
-        duration_us: dur,
-        tx_power_dbm: power,
-    }
-}
 
 struct TestNode {
     id: NodeId,
