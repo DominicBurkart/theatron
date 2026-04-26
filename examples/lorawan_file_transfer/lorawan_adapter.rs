@@ -19,8 +19,9 @@ pub struct LoRaWanAdapter {
     fragmenter: FileFragmenter,
     pending_timeout_ms: Option<u32>,
     /// Absolute simulation time (µs) at which the in-flight TX finishes.
-    /// Set when lorawan-device responds with `Response::Txing`; cleared once
-    /// `Phy(TxDone)` has been delivered to the device.
+    /// `Some` after lorawan-device responds with `Response::Txing` (step 1 of
+    /// the two-step TX lifecycle); cleared once `Phy(TxDone)` has been
+    /// delivered back to the device (step 2).
     tx_end_time: Option<SimTime>,
     tx_start_time: SimTime,
     joined: bool,
@@ -56,12 +57,6 @@ impl LoRaWanAdapter {
         self.tx_start_time + ms as u64 * 1_000
     }
 
-    /// Compute the simulation timestamp (in ms) at which a TX that started at
-    /// `start_us` with duration `duration_us` completes.
-    fn tx_done_timestamp_ms(start_us: SimTime, duration_us: u64) -> u32 {
-        ((start_us + duration_us) / 1_000) as u32
-    }
-
     fn try_send_fragment(&mut self, time: SimTime) -> Option<SimTime> {
         if !self.joined || !self.device.ready_to_send_data() {
             return self.fragmenter.next_available_time(time);
@@ -71,26 +66,24 @@ impl LoRaWanAdapter {
             match self.device.send(&payload, 1, false) {
                 Ok(Response::Txing) => {
                     // Step 1 of the two-step TX lifecycle: lorawan-device has
-                    // handed the frame to SimulatedRadio, which has stored it
-                    // in pending_tx.  The scheduler will pick it up via
-                    // poll_transmit and fire a TxComplete event at
-                    // time + duration_us.  We compute that moment now so we
-                    // can schedule a wake-up and deliver TxDone (step 2).
-                    if let Some(tx) = self.device.get_radio().take_pending_tx() {
-                        let end_us = time + tx.duration_us;
+                    // handed the frame to SimulatedRadio which stored it in
+                    // pending_tx.  Read the duration via the non-consuming
+                    // peek accessor so poll_transmit can still hand the frame
+                    // to the scheduler channel.
+                    if let Some(duration_us) =
+                        self.device.get_radio().pending_tx_duration_us()
+                    {
+                        let end_us = time + duration_us;
                         self.tx_end_time = Some(end_us);
-                        // Put the transmission back so poll_transmit can
-                        // hand it to the scheduler channel.
-                        // We use a private shim: re-inject it through the
-                        // radio's pending_tx field via the public accessor
-                        // pattern already provided.
-                        self.device.get_radio().set_pending_tx(tx);
+                        // Return the TX completion time as the next wake-up so
+                        // update() is called at exactly that instant to deliver
+                        // Phy(TxDone) (step 2).
                         Some(end_us)
                     } else {
                         None
                     }
                 }
-                // Defensive: older behaviour or unexpected response.
+                // Defensive: handle any unexpected response gracefully.
                 Ok(Response::TimeoutRequest(ms)) => {
                     self.pending_timeout_ms = Some(ms);
                     Some(self.wake_from_timeout(ms))
@@ -137,9 +130,9 @@ impl NodeHandle for LoRaWanAdapter {
     }
 
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
-        // Step 2 of the two-step TX lifecycle: if we have reached the end of
-        // an in-flight TX, deliver Phy(TxDone) to lorawan-device so it can
-        // open its RX windows.
+        // Step 2 of the two-step TX lifecycle: once the scheduler has advanced
+        // to the TX completion time, deliver Phy(TxDone) to lorawan-device so
+        // it can open its RX1/RX2 windows and return a TimeoutRequest.
         if let Some(end_us) = self.tx_end_time {
             if time >= end_us {
                 self.tx_end_time = None;
