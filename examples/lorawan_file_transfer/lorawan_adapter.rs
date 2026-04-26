@@ -51,20 +51,28 @@ impl LoRaWanAdapter {
         self.tx_start_time + ms as u64 * 1_000
     }
 
+    /// Converts a device `Result<Response, _>` into an `Option<SimTime>` and
+    /// keeps `pending_timeout_ms` in sync.  A `TimeoutRequest` arms the next
+    /// wake-up; every other outcome leaves the field unchanged and returns
+    /// `None`.
+    fn apply_response<E>(&mut self, result: Result<Response, E>) -> Option<SimTime> {
+        match result {
+            Ok(Response::TimeoutRequest(ms)) => {
+                self.pending_timeout_ms = Some(ms);
+                Some(self.wake_from_timeout(ms))
+            }
+            Ok(_) => None,
+            Err(_) => None,
+        }
+    }
+
     fn try_send_fragment(&mut self, time: SimTime) -> Option<SimTime> {
         if !self.joined || !self.device.ready_to_send_data() {
             return self.fragmenter.next_available_time(time);
         }
         if let Some(payload) = self.fragmenter.next_payload(time) {
             self.tx_start_time = time;
-            match self.device.send(&payload, 1, false) {
-                Ok(Response::TimeoutRequest(ms)) => {
-                    self.pending_timeout_ms = Some(ms);
-                    Some(self.wake_from_timeout(ms))
-                }
-                Ok(_) => None,
-                Err(_) => None,
-            }
+            self.apply_response(self.device.send(&payload, 1, false))
         } else {
             self.fragmenter.next_available_time(time)
         }
@@ -81,21 +89,17 @@ impl NodeHandle for LoRaWanAdapter {
         if !radio.inject_downlink(frame.payload.clone(), frame.sf, frame.frequency) {
             return None;
         }
-        match self
+        let result = self
             .device
             .handle_event(lorawan_device::nb_device::Event::RadioEvent(
                 RadioEvent::Phy(()),
-            )) {
-            Ok(Response::TimeoutRequest(ms)) => {
-                self.pending_timeout_ms = Some(ms);
-                Some(self.wake_from_timeout(ms))
-            }
+            ));
+        match result {
             Ok(Response::DownlinkReceived(_)) | Ok(Response::RxComplete) => {
                 self.pending_timeout_ms = None;
                 None
             }
-            Ok(_) => None,
-            Err(_) => None,
+            other => self.apply_response(other),
         }
     }
 
@@ -105,17 +109,12 @@ impl NodeHandle for LoRaWanAdapter {
 
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
         if let Some(_timeout_ms) = self.pending_timeout_ms.take() {
-            match self
+            let result = self
                 .device
-                .handle_event(lorawan_device::nb_device::Event::TimeoutFired)
-            {
-                Ok(Response::TimeoutRequest(ms)) => {
-                    self.pending_timeout_ms = Some(ms);
-                    Some(self.wake_from_timeout(ms))
-                }
+                .handle_event(lorawan_device::nb_device::Event::TimeoutFired);
+            match result {
                 Ok(Response::RxComplete) | Ok(Response::NoAck) => self.try_send_fragment(time),
-                Ok(_) => None,
-                Err(_) => None,
+                other => self.apply_response(other),
             }
         } else {
             self.try_send_fragment(time)
