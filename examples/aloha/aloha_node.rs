@@ -3,11 +3,9 @@ use theatron::time::SimTime;
 use theatron::traits::TrafficModel;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
-// Default LoRa EU868 radio parameters. `sf` and `frequency` are caller-supplied
-// (they are the primary channel / orthogonality knobs for experiments).
-const DEFAULT_BANDWIDTH_HZ: u32 = 125_000; // EU868 standard bandwidth
-const DEFAULT_CODING_RATE: u8 = 5; // 4/5 coding rate
-const DEFAULT_TX_POWER_DBM: i8 = 14; // 14 dBm, legal limit for EU868
+const DEFAULT_BANDWIDTH_HZ: u32 = 125_000;
+const DEFAULT_CODING_RATE: u8 = 5;
+const DEFAULT_TX_POWER_DBM: i8 = 14;
 
 /// Pure ALOHA node: transmits immediately when a payload is available.
 ///
@@ -52,9 +50,8 @@ impl AlohaNode {
 
     /// Returns the next wake time, or `None` if traffic is permanently exhausted.
     ///
-    /// When all packets have been sent and no new payload will ever be generated,
-    /// returning `None` stops the scheduler from rescheduling this node on the
-    /// poll interval indefinitely.
+    /// When all packets have been sent, returning `None` stops the scheduler
+    /// from rescheduling this node on the poll interval indefinitely.
     fn try_generate_tx(&mut self, time: SimTime) -> Option<SimTime> {
         if self.pending_tx.is_some() {
             return Some(time);
@@ -71,18 +68,10 @@ impl AlohaNode {
             });
             Some(time)
         } else {
-            // Check whether traffic can ever produce another payload. If the
-            // model has a fixed count and it is exhausted, stop scheduling.
-            // We probe one interval ahead; if still None at a future time, we
-            // assume exhaustion — TrafficModel::next_payload is idempotent for
-            // a depleted PeriodicTraffic (remaining == 0 always returns None).
             let future = time + self.poll_interval_us;
             if self.traffic.next_payload(future).is_none() {
-                None // traffic permanently exhausted — do not reschedule
+                None
             } else {
-                // Payload will be ready in the future; wake up and check again.
-                // (next_payload consumed the future slot, but PeriodicTraffic
-                //  re-checks time >= next_time, so calling it early is safe.)
                 Some(future)
             }
         }
