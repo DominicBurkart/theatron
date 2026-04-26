@@ -180,6 +180,14 @@ impl Channel {
         rssi - self.config.noise_floor_dbm
     }
 
+    /// Compute RSSI and SNR for a given transmit power in a single call,
+    /// ensuring `compute_rssi` is invoked exactly once.
+    fn rssi_snr(&self, tx_power_dbm: i8) -> (f32, f32) {
+        let rssi = self.compute_rssi(tx_power_dbm);
+        let snr = self.compute_snr(rssi);
+        (rssi, snr)
+    }
+
     /// Begin a transmission on the channel, returning a `TransmissionStarted` event.
     ///
     /// Collisions are detected immediately: if the new transmission overlaps in time with
@@ -321,13 +329,16 @@ impl Channel {
         self.completed
             .iter()
             .filter(|tx| tx.end <= time && !tx.collided)
-            .map(|tx| RxMetadata {
-                payload: tx.payload.clone(),
-                rssi: self.compute_rssi(tx.tx_power_dbm),
-                snr: self.compute_snr(self.compute_rssi(tx.tx_power_dbm)),
-                sf: tx.sf,
-                frequency: tx.frequency,
-                time: tx.end,
+            .map(|tx| {
+                let (rssi, snr) = self.rssi_snr(tx.tx_power_dbm);
+                RxMetadata {
+                    payload: tx.payload.clone(),
+                    rssi,
+                    snr,
+                    sf: tx.sf,
+                    frequency: tx.frequency,
+                    time: tx.end,
+                }
             })
             .collect()
     }
@@ -361,13 +372,10 @@ impl Channel {
     /// assert!(!completed[0].1);
     /// ```
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
-        let path_loss_db = self.config.path_loss_db;
-        let noise_floor_dbm = self.config.noise_floor_dbm;
         self.completed
             .drain(..)
             .map(|tx| {
-                let rssi = tx.tx_power_dbm as f32 - path_loss_db;
-                let snr = rssi - noise_floor_dbm;
+                let (rssi, snr) = self.rssi_snr(tx.tx_power_dbm);
                 let metadata = RxMetadata {
                     payload: tx.payload,
                     rssi,
