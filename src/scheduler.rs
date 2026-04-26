@@ -53,7 +53,8 @@ pub trait NodeHandle {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EventKind {
     Wake { node_id: NodeId },
-    TxComplete { sender: NodeId },
+    /// Fired when a transmission window closes; the channel resolves overlap at this point.
+    TxComplete,
     InterferencePoll { interferer_idx: usize },
 }
 
@@ -195,10 +196,6 @@ impl Scheduler {
         self.events.push(ScheduledEvent { time, seq, kind });
     }
 
-    fn find_node_idx(&self, id: NodeId) -> Option<usize> {
-        self.nodes.iter().position(|n| n.node_id() == id)
-    }
-
     fn handle_poll_transmit(&mut self, node_idx: usize, time: SimTime) {
         if let Some(tx) = self.nodes[node_idx].poll_transmit(time) {
             let sender = self.nodes[node_idx].node_id();
@@ -210,7 +207,7 @@ impl Scheduler {
             self.metrics.record_tx(sender);
             self.metrics.record_airtime(duration);
             let complete_time = time + duration;
-            self.schedule(complete_time, EventKind::TxComplete { sender });
+            self.schedule(complete_time, EventKind::TxComplete);
         }
     }
 
@@ -223,6 +220,8 @@ impl Scheduler {
                 if captured {
                     self.metrics.record_capture();
                 }
+                // Single pass: deliver frame, collect wake requests, and queue
+                // poll_transmit checks — avoids iterating the node list twice.
                 let mut wakes = Vec::new();
                 let mut tx_node_idxs = Vec::new();
                 for i in 0..self.nodes.len() {
@@ -277,7 +276,7 @@ impl Scheduler {
 
             match event.kind {
                 EventKind::Wake { node_id } => {
-                    if let Some(idx) = self.find_node_idx(node_id) {
+                    if let Some(idx) = self.nodes.iter().position(|n| n.node_id() == node_id) {
                         let next = self.nodes[idx].update(event.time);
                         if let Some(t) = next {
                             self.schedule(t, EventKind::Wake { node_id });
@@ -285,7 +284,7 @@ impl Scheduler {
                         self.handle_poll_transmit(idx, event.time);
                     }
                 }
-                EventKind::TxComplete { sender: _ } => {
+                EventKind::TxComplete => {
                     let completed_events = self.channel.resolve_at(event.time);
                     for ch_event in &completed_events {
                         for interferer in &mut self.interferers {
@@ -309,9 +308,7 @@ impl Scheduler {
                         let complete_time = time + duration;
                         self.schedule(
                             complete_time,
-                            EventKind::TxComplete {
-                                sender: interferer_node_id,
-                            },
+                            EventKind::TxComplete,
                         );
                     }
                     let next = self.interferers[interferer_idx].next_poll_time(time);
