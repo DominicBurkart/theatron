@@ -775,4 +775,78 @@ mod tests {
             prop_assert!(completed.iter().all(|(_, collided, _, _)| !collided));
         }
     }
+
+    #[test]
+    fn test_no_active_after_resolve() {
+        let mut ch = Channel::new();
+        let tx1 = make_tx(7, 868_100_000, 50_000);
+        let tx2 = make_tx(7, 868_300_000, 30_000);
+        let tx3 = make_tx(8, 868_100_000, 80_000);
+        ch.begin_transmission(NodeId(1), &tx1, 0);
+        ch.begin_transmission(NodeId(2), &tx2, 10_000);
+        ch.begin_transmission(NodeId(3), &tx3, 20_000);
+
+        let resolve_time = 50_000;
+        ch.resolve_at(resolve_time);
+
+        // tx1 (end=50k) and tx2 (end=40k) resolved; tx3 (end=100k) still active.
+        let events = ch.resolve_at(100_000);
+        assert_eq!(
+            events.len(),
+            1,
+            "only the transmission ending at 100k should remain active"
+        );
+
+        // After full resolution, no active transmissions should remain.
+        let events_empty = ch.resolve_at(200_000);
+        assert_eq!(
+            events_empty.len(),
+            0,
+            "no transmissions should remain active after resolving past all end times"
+        );
+    }
+
+    #[test]
+    fn test_collision_state_consistency() {
+        let mut ch = Channel::new();
+        let tx1 = make_tx(7, 868_100_000, 50_000);
+        let tx2 = make_tx(7, 868_100_000, 50_000);
+        ch.begin_transmission(NodeId(1), &tx1, 0);
+        ch.begin_transmission(NodeId(2), &tx2, 10_000);
+
+        ch.resolve_at(60_000);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 2);
+
+        for (sender, collided, captured, _meta) in &completed {
+            assert!(
+                *collided,
+                "sender {:?} should be collided for equal-power overlap",
+                sender
+            );
+            assert!(
+                !*captured,
+                "sender {:?} should not be captured for equal-power overlap",
+                sender
+            );
+        }
+
+        // Verify collided frames are not delivered.
+        let mut ch2 = Channel::new();
+        let tx_a = make_tx(7, 868_100_000, 50_000);
+        let tx_b = make_tx(7, 868_100_000, 50_000);
+        ch2.begin_transmission(NodeId(10), &tx_a, 0);
+        ch2.begin_transmission(NodeId(11), &tx_b, 5_000);
+        ch2.resolve_at(55_000);
+        let delivered: Vec<_> = ch2
+            .drain_completed()
+            .into_iter()
+            .filter(|(_, collided, _, _)| !*collided)
+            .collect();
+        assert_eq!(
+            delivered.len(),
+            0,
+            "equal-power collisions should not be delivered"
+        );
+    }
 }
