@@ -119,7 +119,8 @@ mod tests {
         let mut b = Xorshift64::new(9);
         let mut buf_a = [0u8; 16];
         let mut buf_b = [0u8; 16];
-        a.try_fill_bytes(&mut buf_a).expect("try_fill_bytes should never fail");
+        a.try_fill_bytes(&mut buf_a)
+            .expect("try_fill_bytes should never fail");
         b.fill_bytes(&mut buf_b);
         assert_eq!(buf_a, buf_b);
     }

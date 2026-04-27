@@ -5,6 +5,7 @@
 //! poll_transmit drains after the first call, and on_receive is safe
 //! to call at any time.
 
+use theatron::time::SimTime;
 use theatron::traits::Protocol;
 use theatron::types::{RxMetadata, Transmission};
 
@@ -22,15 +23,20 @@ impl Protocol for MinimalProtocol {
     type State = MinimalState;
     type Metrics = ();
 
-    fn init(&self, _config: ()) -> (MinimalState, Option<u64>) {
+    fn init(&self, _config: ()) -> (MinimalState, Option<SimTime>) {
         (MinimalState { transmitted: false }, Some(0))
     }
 
-    fn on_receive(&self, _state: &mut MinimalState, _frame: RxMetadata, _time: u64) -> Option<u64> {
+    fn on_receive(
+        &self,
+        _state: &mut MinimalState,
+        _frame: RxMetadata,
+        _time: SimTime,
+    ) -> Option<SimTime> {
         None
     }
 
-    fn poll_transmit(&self, state: &mut MinimalState, _time: u64) -> Option<Transmission> {
+    fn poll_transmit(&self, state: &mut MinimalState, _time: SimTime) -> Option<Transmission> {
         if state.transmitted {
             return None;
         }
@@ -46,7 +52,7 @@ impl Protocol for MinimalProtocol {
         })
     }
 
-    fn update(&self, _state: &mut MinimalState, _time: u64) -> Option<u64> {
+    fn update(&self, _state: &mut MinimalState, _time: SimTime) -> Option<SimTime> {
         None
     }
 
