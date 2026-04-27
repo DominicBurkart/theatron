@@ -320,3 +320,126 @@ fn same_time_events_fire_in_fifo_order() {
         "updates must fire in registration order when times are equal"
     );
 }
+
+/// On a `Wake` event, the scheduler must (1) call `update`, (2) honor any
+/// `Some(future_t)` it returns by re-scheduling another `Wake` at exactly
+/// `future_t`, AND (3) call `poll_transmit` immediately at the same simulated
+/// time — *all three actions must happen on a single Wake*.
+///
+/// This invariant is what allows protocols to combine "schedule my next timer"
+/// with "send what I have ready right now" without dropping the TX. A
+/// regression that, for example, only invoked `poll_transmit` on Wakes where
+/// `update` returned `None` would silently break every protocol that uses
+/// timer-driven retransmission. See `Scheduler::run`'s `EventKind::Wake` arm
+/// (src/scheduler.rs).
+///
+/// Setup: a single node whose `update` returns `Some(future_t)` AND whose
+/// `poll_transmit` returns `Some(tx)` — both on the very first Wake. We then
+/// assert:
+///   - exactly 1 TX is recorded (the immediate poll fired),
+///   - `update` was called a second time at exactly `future_t` (the rescheduled
+///     Wake fired),
+///   - the recorded `update` call times are `[t0, future_t]` in that order.
+#[test]
+fn wake_invokes_update_then_poll_transmit_and_honors_future_wake() {
+    const FIRST_WAKE: SimTime = 10_000;
+    const FUTURE_WAKE: SimTime = 250_000;
+
+    struct State {
+        update_calls: Vec<SimTime>,
+        poll_calls: Vec<SimTime>,
+        tx_emitted: bool,
+    }
+
+    struct ComboNode {
+        id: NodeId,
+        shared: Rc<RefCell<State>>,
+    }
+
+    impl NodeHandle for ComboNode {
+        fn node_id(&self) -> NodeId {
+            self.id
+        }
+        fn on_receive(&mut self, _: RxMetadata, _: SimTime) -> Option<SimTime> {
+            None
+        }
+        fn poll_transmit(&mut self, time: SimTime) -> Option<Transmission> {
+            let mut s = self.shared.borrow_mut();
+            s.poll_calls.push(time);
+            if s.tx_emitted {
+                return None;
+            }
+            s.tx_emitted = true;
+            Some(Transmission {
+                payload: vec![0xAB],
+                sf: 7,
+                bandwidth: 125_000,
+                coding_rate: 5,
+                frequency: 868_100_000,
+                duration_us: 50_000,
+                tx_power_dbm: 14,
+            })
+        }
+        fn update(&mut self, time: SimTime) -> Option<SimTime> {
+            let mut s = self.shared.borrow_mut();
+            s.update_calls.push(time);
+            // First Wake: schedule a future Wake. Second (future) Wake: stop.
+            if s.update_calls.len() == 1 {
+                Some(FUTURE_WAKE)
+            } else {
+                None
+            }
+        }
+    }
+
+    let shared = Rc::new(RefCell::new(State {
+        update_calls: Vec::new(),
+        poll_calls: Vec::new(),
+        tx_emitted: false,
+    }));
+
+    let mut sched = Scheduler::new(1_000_000);
+    sched.add_node(
+        Box::new(ComboNode {
+            id: NodeId(1),
+            shared: Rc::clone(&shared),
+        }),
+        Some(FIRST_WAKE),
+    );
+    sched.run();
+
+    let s = shared.borrow();
+
+    // Invariant 1: the immediate poll_transmit produced exactly one TX.
+    assert_eq!(
+        sched.metrics.total_tx, 1,
+        "Wake must invoke poll_transmit on the same tick as update; \
+         expected 1 TX from the first Wake, got {}",
+        sched.metrics.total_tx,
+    );
+
+    // Invariant 2: update was called at the initial Wake AND at the future
+    // Wake that update itself requested.
+    assert_eq!(
+        s.update_calls,
+        vec![FIRST_WAKE, FUTURE_WAKE],
+        "update must be called at the initial Wake and again at the wake-time \
+         it returned"
+    );
+
+    // Invariant 3: poll_transmit fires at every Wake, not just when update
+    // returns None. Both calls must happen at the matching Wake times.
+    assert_eq!(
+        s.poll_calls,
+        vec![FIRST_WAKE, FUTURE_WAKE],
+        "poll_transmit must fire on every Wake (after update), independent of \
+         what update returned"
+    );
+
+    // Invariant 4: the rescheduled Wake fired in the future, so current_time
+    // advanced to at least FUTURE_WAKE.
+    assert!(
+        sched.current_time() >= FUTURE_WAKE,
+        "scheduler did not advance to the rescheduled Wake time"
+    );
+}
