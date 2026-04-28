@@ -4,8 +4,6 @@ use lorawan::parser::{DataHeader, DataPayload, MHDRAble, MType, PhyPayload};
 use lorawan_device::nb_device::radio::{Event, PhyRxTx, Response, RfConfig, RxQuality, TxConfig};
 use lorawan_device::nb_device::{Device, Event as DevEvent};
 use lorawan_device::{AppSKey, DevAddr, JoinMode, NewSKey, Timings};
-use rand_core::RngCore;
-
 use theatron::prng::Xorshift64;
 use theatron::types::Transmission;
 
