@@ -526,4 +526,93 @@ mod tests {
             LORA_SF7_DURATION_US
         );
     }
+
+    /// Calling `poll_transmit` while the node is in `Idle` phase must return
+    /// `None` — the guard at the top of `poll_transmit` covers this path.
+    #[test]
+    fn poll_transmit_returns_none_when_not_ready() {
+        let mut node = AlohaNode::new(NodeId(5), NeverFire, 0, 1);
+        // Node starts in Idle — poll_transmit must return None.
+        assert!(
+            node.poll_transmit(0).is_none(),
+            "poll_transmit must return None when not in ReadyToTransmit"
+        );
+    }
+
+    /// Calling `update` a second time while already in `ReadyToTransmit`
+    /// (without an intervening `poll_transmit`) must return `Some(time)` and
+    /// leave the payload intact.
+    #[test]
+    fn update_returns_same_time_when_ready_to_transmit() {
+        let traffic = OneShot(Some(vec![0xFF]));
+        let mut node = AlohaNode::new(NodeId(6), traffic, 0, 2);
+        // First update: traffic fires → phase becomes ReadyToTransmit.
+        let t1 = node.update(0);
+        assert_eq!(t1, Some(0), "should wake immediately when ready");
+        // Second update (still in ReadyToTransmit, poll_transmit not yet called).
+        let t2 = node.update(0);
+        assert_eq!(
+            t2,
+            Some(0),
+            "update while ReadyToTransmit must return the same time"
+        );
+        // Payload must still be available.
+        assert!(
+            node.poll_transmit(0).is_some(),
+            "payload must survive the extra update call"
+        );
+    }
+
+    /// Calling `update` with a time strictly before the backoff deadline must
+    /// return `Some(until)` without advancing the phase — the "still waiting"
+    /// path inside `Phase::Backoff`.
+    #[test]
+    fn backoff_still_waiting_returns_future_wake() {
+        let traffic = OneShot(Some(vec![0x42]));
+        // backoff_range_us = 100_000 → backoff ∈ [0, 100_000)
+        let mut node = AlohaNode::new(NodeId(7), traffic, 100_000, 3);
+
+        // Drive to ReadyToTransmit.
+        node.update(0);
+        // Transmit: phase → AwaitingBackoffStart.
+        let tx = node.poll_transmit(0);
+        assert!(tx.is_some());
+
+        // update at t=0: phase → Backoff { until = 0 + 56_000 + backoff }.
+        let until = node.update(0).expect("must return the backoff deadline");
+        assert!(until >= LORA_SF7_DURATION_US, "deadline must be after on-air time");
+
+        // Call update with time strictly before the deadline.
+        let mid = until / 2;
+        let again = node.update(mid);
+        assert_eq!(
+            again,
+            Some(until),
+            "still-waiting path must return the original deadline"
+        );
+    }
+
+    /// `on_receive` is a no-op for Pure ALOHA; it must return `None` and not
+    /// mutate the node state.
+    #[test]
+    fn on_receive_returns_none() {
+        let mut node = AlohaNode::new(NodeId(8), NeverFire, 0, 1);
+        let frame = RxMetadata {
+            payload: vec![0xDE, 0xAD],
+            rssi: -90.0,
+            snr: 5.0,
+            sf: 7,
+            frequency: LORA_FREQUENCY,
+            time: 0,
+        };
+        assert!(
+            node.on_receive(frame, 0).is_none(),
+            "Pure ALOHA on_receive must always return None"
+        );
+        // Node must still be idle after the receive event.
+        assert!(
+            node.poll_transmit(0).is_none(),
+            "on_receive must not trigger a transmission"
+        );
+    }
 }
