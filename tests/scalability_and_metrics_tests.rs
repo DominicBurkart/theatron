@@ -5,7 +5,6 @@
 ///    relationships between counters can never be violated.
 /// 3. **TrafficModel** – `PeriodicTrafficModel` produces packets at the
 ///    expected rate when wired into a simulation node.
-
 use theatron::scheduler::{NodeHandle, Scheduler};
 use theatron::time::SimTime;
 use theatron::traits::TrafficModel;
@@ -138,11 +137,9 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
         .map(|id| sched.metrics.node_tx_count(NodeId(id)))
         .sum();
     assert_eq!(
-        sched.metrics.total_tx,
-        per_node_sum,
+        sched.metrics.total_tx, per_node_sum,
         "metrics.total_tx ({}) != sum of per-node counts ({})",
-        sched.metrics.total_tx,
-        per_node_sum
+        sched.metrics.total_tx, per_node_sum
     );
 
     // --- invariant 3: per-node tx count is within a plausible range ---
@@ -498,16 +495,20 @@ fn traffic_model_payload_delivered_correctly() {
     sched.add_node(Box::new(listener), None);
     sched.run();
 
-    // All transmissions should be received (no collisions, single sender).
-    assert_eq!(
-        sched.metrics.total_tx,
-        sched.metrics.total_rx,
-        "every TX should be received when there is a single sender and no interference"
-    );
+    // All transmissions that complete within the simulation window should be
+    // received (no collisions, single sender).  A TX started near end_time may
+    // have its TxComplete event fall beyond end_time and therefore never be
+    // delivered; allow at most one such in-flight frame.
     assert_eq!(sched.metrics.total_collisions, 0);
     assert!(
         sched.metrics.total_tx >= 3,
         "expected at least 3 transmissions in a 2 s window, got {}",
         sched.metrics.total_tx
+    );
+    assert!(
+        sched.metrics.total_rx >= sched.metrics.total_tx.saturating_sub(1),
+        "received {} frames but expected at most 1 in-flight loss (tx={})",
+        sched.metrics.total_rx,
+        sched.metrics.total_tx,
     );
 }
