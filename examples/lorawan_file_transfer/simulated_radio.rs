@@ -70,7 +70,6 @@ impl PhyRxTx for SimulatedRadio {
     type PhyResponse = ();
 
     const MAX_RADIO_POWER: u8 = 20;
-    const ANTENNA_GAIN: i8 = 0;
 
     fn get_mut_radio(&mut self) -> &mut Self {
         self
