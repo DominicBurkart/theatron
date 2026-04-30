@@ -37,7 +37,6 @@ pub struct LoRaWanAdapter {
     fragmenter: FileFragmenter,
     pending_timeout_ms: Option<u32>,
     tx_start_time: SimTime,
-    joined: bool,
     /// Transmission staged during `on_receive` / `update` so that
     /// `poll_transmit` never needs to reach into the radio directly.
     pending_tx: Option<Transmission>,
@@ -71,7 +70,6 @@ impl LoRaWanAdapter {
             fragmenter,
             pending_timeout_ms: None,
             tx_start_time: 0,
-            joined: true,
             pending_tx: None,
         }
     }
@@ -90,7 +88,7 @@ impl LoRaWanAdapter {
     }
 
     fn try_send_fragment(&mut self, time: SimTime) -> Option<SimTime> {
-        if !self.joined || !self.device.ready_to_send_data() {
+        if !self.device.ready_to_send_data() {
             return self.fragmenter.next_available_time(time);
         }
         if let Some(payload) = self.fragmenter.next_payload(time) {
