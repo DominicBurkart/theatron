@@ -327,7 +327,7 @@ impl PeriodicTrafficModel {
 impl TrafficModel for PeriodicTrafficModel {
     fn next_payload(&mut self, time: SimTime) -> Option<Vec<u8>> {
         if time >= self.last_generated_us + self.interval_us {
-            self.last_generated_us = time;
+            self.last_generated_us += self.interval_us;
             Some(self.payload.clone())
         } else {
             None
