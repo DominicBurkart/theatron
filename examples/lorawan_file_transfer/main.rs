@@ -23,6 +23,13 @@ pub const EU868_CHANNELS: [u32; 3] = [868_100_000, 868_300_000, 868_500_000];
 pub const INTERFERER_PERIOD_US: u64 = 10_000_000;
 pub const INTERFERER_DURATION_US: u64 = 500_000;
 pub const INTERFERER_SF: u8 = 7;
+
+/// Master PRNG seed for the simulation.
+///
+/// Each node derives its own independent seed from this value combined with
+/// its numeric node ID via [`lorawan_adapter::derive_seed`].  Changing
+/// `SEED` changes every node's sequence simultaneously while keeping all
+/// per-node sequences distinct and reproducible.
 pub const SEED: u64 = 0xDEAD_BEEF_1234_5678;
 
 fn main() {
@@ -31,7 +38,10 @@ fn main() {
 
     let file_data: Vec<u8> = (0..FILE_SIZE).map(|i| (i % 251) as u8).collect();
     let fragmenter = FileFragmenter::new(file_data, CHUNK_SIZE, INTERVAL_US);
-    let device = LoRaWanAdapter::new(NodeId(1), fragmenter, SEED);
+    // Pass the master seed and the node's numeric ID so that LoRaWanAdapter
+    // derives a per-node seed internally, keeping per-node RNG streams
+    // independent even when multiple devices are added to the scheduler.
+    let device = LoRaWanAdapter::new(NodeId(1), fragmenter, SEED, 1);
     let server = NetworkServer::new(NodeId(100));
 
     scheduler.add_node(Box::new(device), Some(0));
