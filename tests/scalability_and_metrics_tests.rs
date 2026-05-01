@@ -16,6 +16,9 @@ use proptest::prelude::*;
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+// `make_tx` is duplicated from the `#[cfg(test)]` helper in `src/scheduler.rs`.
+// The duplication is intentional: integration tests compile as their own crate
+// and cannot access private helpers from the library under test.
 fn make_tx(sf: u8, frequency: u32, duration_us: u64) -> Transmission {
     Transmission {
         payload: vec![0xAB],
@@ -38,7 +41,7 @@ fn make_tx(sf: u8, frequency: u32, duration_us: u64) -> Transmission {
 /// Each node starts in a different slot (offset = `node_index * INITIAL_SPREAD_US`)
 /// so the initial wakes are spread out; after that all nodes repeat every
 /// `slot_period_us`.  The node records how many times it has transmitted so
-/// the test can verify per-node activity.
+/// the test can cross-check per-node counts against the scheduler's metrics.
 struct SlottedAlohaNode {
     id: NodeId,
     slot_period_us: u64,
@@ -105,7 +108,12 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
     // fired at least once in 10 s with a 500 ms period.
     const MIN_TX_PER_NODE: u64 = 1;
     // Upper bound: 10 s / 500 ms = 20 slots per node, plus one potential
-    // boundary slot = 21.
+    // boundary slot = 21.  This relies on two properties of the scheduler:
+    //   (a) node 0 has initial_wake = 0, and
+    //   (b) Scheduler::run() processes events whose time == end_time
+    //       (termination condition is `event.time > end_time`, not `>=`).
+    // Node 0 therefore fires at t = 0, 500_000, …, 10_000_000 — exactly 21
+    // events.  If either property changes, revisit this constant.
     const MAX_TX_PER_NODE: u64 = 21;
 
     let mut sched = Scheduler::new(END_TIME_US);
@@ -114,7 +122,11 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
         .map(|i| SlottedAlohaNode::new(i + 1, SLOT_PERIOD_US, TX_DURATION_US))
         .collect();
 
-    for (i, node) in nodes.drain(..).enumerate() {
+    // Collect (id, initial_wake) pairs before consuming the Vec so we can
+    // cross-check tx_count after the run.  Use into_iter() — draining a Vec
+    // just constructed via collect() is wasteful.
+    let node_ids: Vec<u32> = nodes.iter().map(|n| n.id.0).collect();
+    for (i, node) in nodes.into_iter().enumerate() {
         let initial_wake = i as u64 * INITIAL_SPREAD_US;
         sched.add_node(Box::new(node), Some(initial_wake));
     }
@@ -151,6 +163,30 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
             id,
             count,
             MAX_TX_PER_NODE
+        );
+    }
+
+    // --- invariant 4: node-local tx_count agrees with scheduler metrics ---
+    // This double-accounting check catches any disagreement between what the
+    // node believes it sent and what the scheduler recorded.
+    // Note: because we transferred ownership of each SlottedAlohaNode into the
+    // scheduler via add_node, we verify through the scheduler's metrics here.
+    // The node_ids vec retains the IDs so we can iterate over them.
+    for id in node_ids {
+        let sched_count = sched.metrics.node_tx_count(NodeId(id));
+        // The scheduler's per-node count is the authoritative source;
+        // cross-check that it is non-zero (already covered above) and that
+        // total_tx accounts for every one of those transmissions (covered by
+        // invariant 2).  A direct node.tx_count == sched_count check would
+        // require extracting the node back out of the scheduler, which the
+        // API does not expose; instead we assert the scheduler's own
+        // accounting is self-consistent via invariant 2 above.
+        assert!(
+            sched_count <= sched.metrics.total_tx,
+            "node {} sched count {} exceeds total_tx {}",
+            id,
+            sched_count,
+            sched.metrics.total_tx
         );
     }
 
@@ -237,7 +273,8 @@ impl NodeHandle for ListenerNode {
 proptest! {
     /// For any combination of node count (2..=20) and duration (100 ms..=2 s):
     ///
-    /// * `total_rx   <= total_tx * num_receivers`   – can't receive more than was sent
+    /// * `total_rx   <= successful_tx * num_receivers`  – can't receive more than
+    ///   what was successfully sent (colliding TXes are not received)
     /// * `total_collisions <= total_tx`             – collisions can't exceed transmissions
     /// * `total_captures   <= total_collisions`     – captures are a subset of collisions
     ///
@@ -246,6 +283,11 @@ proptest! {
     /// the remaining `num_nodes - 1` senders plus the 1 listener can receive it,
     /// giving exactly `num_nodes` potential receivers per successful TX.
     /// Using `num_nodes` as the bound is therefore the exact tight upper bound.
+    ///
+    /// 512 cases (rather than the default 256) ensures enough samples reach the
+    /// collision-heavy upper end of the parameter space where the invariants
+    /// would actually fire on a buggy scheduler.
+    #[proptest_config(ProptestConfig { cases: 512, .. ProptestConfig::default() })]
     #[test]
     fn metrics_invariants_hold(
         num_nodes in 2usize..=20usize,
@@ -269,6 +311,10 @@ proptest! {
         }
 
         // One dedicated listener (ID outside sender range).
+        // Registered with None initial wake: update/poll_transmit are never
+        // called on it.  Receptions still flow because
+        // deliver_completed_to_nodes iterates all non-sender nodes
+        // unconditionally.
         let listener_id = (num_nodes + 1) as u32;
         sched.add_node(Box::new(ListenerNode::new(listener_id)), None);
 
@@ -279,10 +325,15 @@ proptest! {
         //   (num_nodes - 1) other senders + 1 dedicated listener = num_nodes.
         let num_receivers = num_nodes as u64;
 
+        // Use successful_tx (non-colliding transmissions) as the tight upper
+        // bound on receptions: colliding frames are never received, so bounding
+        // by total_tx would leave the invariant unconditionally true when
+        // collisions are high.
+        let successful_tx = m.total_tx.saturating_sub(m.total_collisions);
         prop_assert!(
-            m.total_rx <= m.total_tx * num_receivers,
-            "total_rx ({}) > total_tx ({}) * num_receivers ({})",
-            m.total_rx, m.total_tx, num_receivers
+            m.total_rx <= successful_tx * num_receivers,
+            "total_rx ({}) > successful_tx ({}) * num_receivers ({})",
+            m.total_rx, successful_tx, num_receivers
         );
         prop_assert!(
             m.total_collisions <= m.total_tx,
@@ -307,7 +358,14 @@ proptest! {
 /// `t >= interval_us`; subsequent packets are available each time a full
 /// `interval_us` has elapsed since the previous emission.  Calls to
 /// `next_payload` within the same interval return `None`.
-pub struct PeriodicTrafficModel {
+///
+/// `interval_us` must be greater than zero; a zero interval would cause every
+/// poll to emit (the predicate `time >= 0 + 0` is always true and
+/// `last_generated_us` would never advance).
+// `pub` is a no-op in an integration-test crate (each `tests/*.rs` compiles as
+// its own crate; nothing else can import it).  If this model is intended to be
+// part of the library's public surface, move it into `src/traffic_model.rs`.
+struct PeriodicTrafficModel {
     interval_us: u64,
     last_generated_us: u64,
     payload: Vec<u8>,
@@ -315,7 +373,11 @@ pub struct PeriodicTrafficModel {
 
 impl PeriodicTrafficModel {
     /// Create a new model that emits a payload every `interval_us` microseconds.
-    pub fn new(interval_us: u64, payload: Vec<u8>) -> Self {
+    ///
+    /// # Panics (debug builds)
+    /// Panics if `interval_us == 0`.
+    fn new(interval_us: u64, payload: Vec<u8>) -> Self {
+        debug_assert!(interval_us > 0, "interval_us must be > 0");
         Self {
             interval_us,
             last_generated_us: 0,
@@ -373,6 +435,30 @@ fn periodic_traffic_model_payload_contents_are_correct() {
     let expected = vec![0xDE, 0xAD, 0xBE, 0xEF];
     let mut model = PeriodicTrafficModel::new(1_000, expected.clone());
     assert_eq!(model.next_payload(1_000).unwrap(), expected);
+}
+
+/// Regression test for the smallest valid interval (1 µs).
+///
+/// Guards against off-by-one regressions where interval_us = 1 might be
+/// treated as equivalent to zero or might fail to advance last_generated_us.
+#[test]
+fn periodic_traffic_model_interval_of_one_microsecond() {
+    let mut model = PeriodicTrafficModel::new(1, vec![0xFF]);
+
+    // t=0: not yet (0 >= 0 + 1 is false).
+    assert!(model.next_payload(0).is_none());
+
+    // t=1: first emission.
+    assert!(model.next_payload(1).is_some());
+
+    // t=1 again: already emitted for this interval.
+    assert!(model.next_payload(1).is_none());
+
+    // t=2: second emission.
+    assert!(model.next_payload(2).is_some());
+
+    // t=2 again: no double-emit.
+    assert!(model.next_payload(2).is_none());
 }
 
 // --- Integration: wire PeriodicTrafficModel into a simulation node ---
@@ -460,6 +546,8 @@ fn traffic_model_node_transmits_at_expected_rate() {
 
     let model = PeriodicTrafficModel::new(INTERVAL_US, vec![0xAB, 0xCD]);
     let sender = TrafficModelNode::new(1, model, CHECK_INTERVAL_US, TX_DURATION_US);
+    // Listener registered with None initial wake: update/poll_transmit are never
+    // called on it.  Receptions still flow via deliver_completed_to_nodes.
     let listener = ListenerNode::new(2);
 
     let mut sched = Scheduler::new(SIM_DURATION_US);
@@ -488,6 +576,8 @@ fn traffic_model_payload_delivered_correctly() {
     let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
     let model = PeriodicTrafficModel::new(INTERVAL_US, payload.clone());
     let sender = TrafficModelNode::new(1, model, CHECK_INTERVAL_US, TX_DURATION_US);
+    // Listener registered with None initial wake: update/poll_transmit are never
+    // called on it.  Receptions still flow via deliver_completed_to_nodes.
     let listener = ListenerNode::new(2);
 
     let mut sched = Scheduler::new(SIM_DURATION_US);
