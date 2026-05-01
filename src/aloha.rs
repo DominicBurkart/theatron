@@ -669,8 +669,11 @@ mod tests {
         let until = node.update(0).expect("must return the backoff deadline");
         assert!(until >= LORA_SF7_DURATION_US, "deadline must be after on-air time");
 
-        // Call update with time strictly before the deadline.
+        // Use a mid-point strictly before the deadline.  The explicit assert
+        // documents the precondition required for the still-waiting branch to
+        // fire, making it obvious if the arithmetic ever changes.
         let mid = until / 2;
+        assert!(mid < until, "mid must be strictly before deadline for this test to be meaningful");
         let again = node.update(mid);
         assert_eq!(
             again,
@@ -679,10 +682,11 @@ mod tests {
         );
     }
 
-    /// `on_receive` is a no-op for Pure ALOHA; it must return `None` and not
-    /// mutate the node state.
+    /// `on_receive` is a no-op for Pure ALOHA: it returns `None` (no
+    /// scheduler wake requested) and leaves the node state unchanged.
+    /// Both properties are asserted here.
     #[test]
-    fn on_receive_returns_none() {
+    fn on_receive_is_noop() {
         let mut node = AlohaNode::new(NodeId(8), NeverFire, 0, 1);
         let frame = RxMetadata {
             payload: vec![0xDE, 0xAD],
@@ -692,11 +696,12 @@ mod tests {
             frequency: LORA_FREQUENCY,
             time: 0,
         };
+        // Return value: must not request a wake.
         assert!(
             node.on_receive(frame, 0).is_none(),
             "Pure ALOHA on_receive must always return None"
         );
-        // Node must still be idle after the receive event.
+        // State invariance: node must remain idle, not ready to transmit.
         assert!(
             node.poll_transmit(0).is_none(),
             "on_receive must not trigger a transmission"
