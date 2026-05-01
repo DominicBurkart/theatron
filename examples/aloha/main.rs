@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo run --example aloha
 
-use theatron::aloha::{AlohaNode, PoissonTraffic, LORA_SF7_DURATION_US};
+use theatron::aloha::{AlohaNode, UniformInterarrivalTraffic, LORA_SF7_DURATION_US};
 use theatron::scheduler::Scheduler;
 use theatron::types::NodeId;
 
@@ -30,7 +30,7 @@ fn main() {
     ];
 
     for (id, traffic_seed, backoff_seed) in nodes {
-        let traffic = PoissonTraffic::new(MEAN_INTER_ARRIVAL_US, traffic_seed);
+        let traffic = UniformInterarrivalTraffic::new(MEAN_INTER_ARRIVAL_US, traffic_seed);
         let node = AlohaNode::new(NodeId(id), traffic, BACKOFF_RANGE_US, backoff_seed);
         scheduler.add_node(Box::new(node), Some(0));
     }

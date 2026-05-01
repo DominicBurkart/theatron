@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use theatron::aloha::{AlohaNode, PoissonTraffic, LORA_SF7_DURATION_US};
+use theatron::aloha::{AlohaNode, UniformInterarrivalTraffic, LORA_SF7_DURATION_US};
 use theatron::scheduler::{NodeHandle, Scheduler};
 use theatron::time::SimTime;
 use theatron::traits::TrafficModel;
@@ -73,6 +73,14 @@ impl NodeHandle for Receiver {
 }
 
 /// Traffic model that fires exactly `n` times, one payload per poll.
+///
+/// Note: `NShot` decrements and returns on every call regardless of `time`.
+/// This works correctly in these tests because `AlohaNode` only polls the
+/// traffic model from the `Idle` path — so both payloads cannot be consumed
+/// at the same timestamp.  If the state machine were ever changed to poll
+/// more aggressively, this helper should be replaced with a time-gated
+/// model like `FireOnce` to avoid accidentally consuming both payloads
+/// before the first TX completes.
 struct NShot(u8);
 
 impl TrafficModel for NShot {
@@ -177,8 +185,10 @@ fn multi_node_collision() {
     scheduler.run();
 
     assert_eq!(scheduler.metrics.total_tx, 2, "both nodes must transmit");
-    assert!(
-        scheduler.metrics.total_collisions >= 2,
+    // With exactly two simultaneous same-SF/freq transmitters there should be
+    // exactly 2 collision records (one per colliding CompletedTx).
+    assert_eq!(
+        scheduler.metrics.total_collisions, 2,
         "both concurrent same-SF/freq TXs must collide; got {}",
         scheduler.metrics.total_collisions
     );
@@ -229,8 +239,13 @@ fn backoff_retransmission() {
         times[1],
         times[0]
     );
-    // The node cannot re-transmit until after the first packet has been on
-    // air (TX duration) plus any backoff time (≥ 0).
+    // The minimum gap between the two TXs is LORA_SF7_DURATION_US because:
+    //   - after poll_transmit fires, the node enters AwaitingBackoffStart
+    //   - the next update() call computes:
+    //       until = tx_start + LORA_SF7_DURATION_US + drawn_backoff
+    //   - drawn_backoff >= 0, so the gap is always >= LORA_SF7_DURATION_US
+    // This covers the full on-air time of the first packet even when the
+    // drawn backoff is zero.
     assert!(
         times[1] >= times[0] + LORA_SF7_DURATION_US,
         "second TX must be at least one TX-duration after the first; \
