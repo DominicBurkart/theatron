@@ -223,31 +223,31 @@ impl Scheduler {
                 if captured {
                     self.metrics.record_capture();
                 }
-                let mut wakes = Vec::new();
+                // INVARIANT: receiver_results must contain every non-sender node index.
+                // The first pass calls on_receive + records RX metrics for all non-sender
+                // nodes and collects (index, optional_wake). The second pass then schedules
+                // wakes and calls handle_poll_transmit. These two passes cannot be merged
+                // into one because handle_poll_transmit takes &mut self, which would
+                // conflict with the ongoing borrow of self.nodes[i] in the same loop.
+                // If this first loop ever gains a filter or early-break, nodes may silently
+                // miss their transmit poll and the simulation will produce incorrect results.
+                let mut receiver_results: Vec<(usize, Option<SimTime>)> = Vec::new();
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
+                        let node_id = self.nodes[i].node_id();
                         let next = self.nodes[i].on_receive(frame.clone(), time);
-                        self.metrics.record_rx(self.nodes[i].node_id());
-                        if let Some(t) = next {
-                            wakes.push((self.nodes[i].node_id(), t));
-                        }
+                        self.metrics.record_rx(node_id);
+                        receiver_results.push((i, next));
                     }
                 }
-                for (node_id, t) in wakes {
-                    self.schedule(t, EventKind::Wake { node_id });
-                }
-                // INVARIANT: tx_node_idxs must contain every non-sender node index.
-                // handle_poll_transmit relies on being called for all potential
-                // receivers after a completed transmission. If this loop ever gains
-                // a filter or early-break, nodes may silently miss their transmit
-                // poll and the simulation will produce incorrect results.
-                let mut tx_node_idxs = Vec::new();
-                for i in 0..self.nodes.len() {
-                    if self.nodes[i].node_id() != sender {
-                        tx_node_idxs.push(i);
+                // Second pass: schedule any requested wakes and poll for
+                // follow-on transmissions using only indices and wake times
+                // already captured — no additional Vec needed.
+                for (i, wake) in receiver_results {
+                    if let Some(t) = wake {
+                        let node_id = self.nodes[i].node_id();
+                        self.schedule(t, EventKind::Wake { node_id });
                     }
-                }
-                for i in tx_node_idxs {
                     self.handle_poll_transmit(i, time);
                 }
             }
