@@ -20,11 +20,6 @@ impl FileFragmenter {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn is_done(&self) -> bool {
-        self.offset >= self.data.len()
-    }
-
     pub fn next_available_time(&self, current_time: SimTime) -> Option<SimTime> {
         if self.offset >= self.data.len() {
             None
