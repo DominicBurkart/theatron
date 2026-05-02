@@ -35,7 +35,12 @@ pub struct LoRaWanAdapter {
     id: NodeId,
     device: Device<SimulatedRadio, Xorshift64, BUF_SIZE>,
     fragmenter: FileFragmenter,
-    pending_timeout_ms: Option<u32>,
+    /// Whether the device is currently waiting on a `TimeoutFired` event.
+    /// The actual ms value isn't needed once stored — the scheduler is the
+    /// source of truth for when the timeout fires; we only need to know
+    /// whether `update` should dispatch `TimeoutFired` versus polling for
+    /// a new fragment.
+    timeout_pending: bool,
     tx_start_time: SimTime,
     /// Transmission staged during `on_receive` / `update` so that
     /// `poll_transmit` never needs to reach into the radio directly.
@@ -68,7 +73,7 @@ impl LoRaWanAdapter {
             id,
             device,
             fragmenter,
-            pending_timeout_ms: None,
+            timeout_pending: false,
             tx_start_time: 0,
             pending_tx: None,
         }
@@ -95,7 +100,7 @@ impl LoRaWanAdapter {
             self.tx_start_time = time;
             match self.device.send(&payload, 1, false) {
                 Ok(Response::TimeoutRequest(ms)) => {
-                    self.pending_timeout_ms = Some(ms);
+                    self.timeout_pending = true;
                     self.stage_pending_tx();
                     Some(self.wake_from_timeout(ms))
                 }
@@ -131,11 +136,11 @@ impl NodeHandle for LoRaWanAdapter {
         self.stage_pending_tx();
         match result {
             Ok(Response::TimeoutRequest(ms)) => {
-                self.pending_timeout_ms = Some(ms);
+                self.timeout_pending = true;
                 Some(self.wake_from_timeout(ms))
             }
             Ok(Response::DownlinkReceived(_)) | Ok(Response::RxComplete) => {
-                self.pending_timeout_ms = None;
+                self.timeout_pending = false;
                 None
             }
             Ok(_) => None,
@@ -148,7 +153,8 @@ impl NodeHandle for LoRaWanAdapter {
     }
 
     fn update(&mut self, time: SimTime) -> Option<SimTime> {
-        if let Some(_timeout_ms) = self.pending_timeout_ms.take() {
+        if self.timeout_pending {
+            self.timeout_pending = false;
             let result = self
                 .device
                 .handle_event(lorawan_device::nb_device::Event::TimeoutFired);
@@ -157,7 +163,7 @@ impl NodeHandle for LoRaWanAdapter {
             self.stage_pending_tx();
             match result {
                 Ok(Response::TimeoutRequest(ms)) => {
-                    self.pending_timeout_ms = Some(ms);
+                    self.timeout_pending = true;
                     Some(self.wake_from_timeout(ms))
                 }
                 Ok(Response::RxComplete) | Ok(Response::NoAck) => self.try_send_fragment(time),
