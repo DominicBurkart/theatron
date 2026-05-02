@@ -26,10 +26,9 @@ pub const INTERFERER_SF: u8 = 7;
 
 /// Master PRNG seed for the simulation.
 ///
-/// Each node derives its own independent seed from this value combined with
-/// its numeric node ID via [`lorawan_adapter::derive_seed`].  Changing
-/// `SEED` changes every node's sequence simultaneously while keeping all
-/// per-node sequences distinct and reproducible.
+/// Each node derives its own seed from this value plus its numeric node ID
+/// via [`lorawan_adapter::derive_seed`]. Changing `SEED` shifts every node's
+/// sequence at once while keeping per-node streams distinct and reproducible.
 pub const SEED: u64 = 0xDEAD_BEEF_1234_5678;
 
 fn main() {
@@ -38,9 +37,8 @@ fn main() {
 
     let file_data: Vec<u8> = (0..FILE_SIZE).map(|i| (i % 251) as u8).collect();
     let fragmenter = FileFragmenter::new(file_data, CHUNK_SIZE, INTERVAL_US);
-    // Pass the master seed and the node's numeric ID so that LoRaWanAdapter
-    // derives a per-node seed internally, keeping per-node RNG streams
-    // independent even when multiple devices are added to the scheduler.
+    // LoRaWanAdapter derives a per-node RNG seed from (master_seed, node_id),
+    // so multi-device simulations get independent streams from one master seed.
     let device = LoRaWanAdapter::new(NodeId(1), fragmenter, SEED, 1);
     let server = NetworkServer::new(NodeId(100));
 

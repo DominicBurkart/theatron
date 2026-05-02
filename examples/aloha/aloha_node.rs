@@ -50,11 +50,8 @@ impl AlohaNode {
         }
     }
 
-    /// Returns the next wake time, or `None` if traffic is permanently exhausted.
-    ///
-    /// When all packets have been sent and no new payload will ever be generated,
-    /// returning `None` stops the scheduler from rescheduling this node on the
-    /// poll interval indefinitely.
+    /// Returns the next wake time, or `None` if traffic is permanently
+    /// exhausted (so the scheduler stops polling this node forever).
     fn try_generate_tx(&mut self, time: SimTime) -> Option<SimTime> {
         if self.pending_tx.is_some() {
             return Some(time);
@@ -71,18 +68,15 @@ impl AlohaNode {
             });
             Some(time)
         } else {
-            // Check whether traffic can ever produce another payload. If the
-            // model has a fixed count and it is exhausted, stop scheduling.
-            // We probe one interval ahead; if still None at a future time, we
-            // assume exhaustion — TrafficModel::next_payload is idempotent for
-            // a depleted PeriodicTraffic (remaining == 0 always returns None).
+            // Probe one interval ahead: if `next_payload` is still None at a
+            // future time, the model is exhausted (PeriodicTraffic returns
+            // None forever once `remaining == 0`) and we stop scheduling.
+            // Probing is safe — PeriodicTraffic only consumes a slot when
+            // `time >= next_time`, so calling early is idempotent.
             let future = time + self.poll_interval_us;
             if self.traffic.next_payload(future).is_none() {
-                None // traffic permanently exhausted — do not reschedule
+                None
             } else {
-                // Payload will be ready in the future; wake up and check again.
-                // (next_payload consumed the future slot, but PeriodicTraffic
-                //  re-checks time >= next_time, so calling it early is safe.)
                 Some(future)
             }
         }

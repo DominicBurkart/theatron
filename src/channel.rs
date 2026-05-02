@@ -14,7 +14,7 @@ pub const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
 
 /// Configuration for physical-layer channel parameters.
 ///
-/// Construct with [`ChannelConfig::lora_defaults()`] for LoRa or supply
+/// Construct with [`ChannelConfig::lora_defaults`] for LoRa or supply
 /// custom values for other protocols.
 ///
 /// # Examples
@@ -47,7 +47,7 @@ pub struct ChannelConfig {
 }
 
 impl ChannelConfig {
-    /// Return the LoRa default parameters used by [`Channel::new()`].
+    /// Return the LoRa default parameters used by [`Channel::new`].
     ///
     /// | Parameter               | Value    |
     /// |-------------------------|----------|
@@ -96,7 +96,7 @@ struct ActiveTransmission {
 /// A simulated wireless channel with collision detection.
 ///
 /// Physical-layer parameters are controlled by [`ChannelConfig`]. Use
-/// [`Channel::new()`] for LoRa defaults or [`Channel::with_config()`] to
+/// [`Channel::new`] for LoRa defaults or [`Channel::with_config`] to
 /// supply custom parameters for other protocols.
 pub struct Channel {
     active: Vec<ActiveTransmission>,
@@ -144,7 +144,7 @@ impl Channel {
     /// Create a new channel overriding only the co-channel rejection threshold.
     ///
     /// All other parameters default to LoRa values. Prefer
-    /// [`Channel::with_config()`] when you want to control multiple parameters.
+    /// [`Channel::with_config`] when you want to control multiple parameters.
     ///
     /// # Examples
     ///
