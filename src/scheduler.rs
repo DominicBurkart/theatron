@@ -53,7 +53,7 @@ pub trait NodeHandle {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EventKind {
     Wake { node_id: NodeId },
-    TxComplete { sender: NodeId },
+    TxComplete,
     InterferencePoll { interferer_idx: usize },
 }
 
@@ -210,7 +210,7 @@ impl Scheduler {
             self.metrics.record_tx(sender);
             self.metrics.record_airtime(duration);
             let complete_time = time + duration;
-            self.schedule(complete_time, EventKind::TxComplete { sender });
+            self.schedule(complete_time, EventKind::TxComplete);
         }
     }
 
@@ -289,7 +289,7 @@ impl Scheduler {
                         self.handle_poll_transmit(idx, event.time);
                     }
                 }
-                EventKind::TxComplete { sender: _ } => {
+                EventKind::TxComplete => {
                     let completed_events = self.channel.resolve_at(event.time);
                     for ch_event in &completed_events {
                         for interferer in &mut self.interferers {
@@ -311,12 +311,7 @@ impl Scheduler {
                         }
                         self.metrics.record_airtime(duration);
                         let complete_time = time + duration;
-                        self.schedule(
-                            complete_time,
-                            EventKind::TxComplete {
-                                sender: interferer_node_id,
-                            },
-                        );
+                        self.schedule(complete_time, EventKind::TxComplete);
                     }
                     let next = self.interferers[interferer_idx].next_poll_time(time);
                     if let Some(t) = next {
