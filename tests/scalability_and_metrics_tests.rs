@@ -118,7 +118,7 @@ fn fifty_node_slotted_aloha_all_nodes_transmit() {
 
     let mut sched = Scheduler::new(END_TIME_US);
 
-    let mut nodes: Vec<SlottedAlohaNode> = (0..NUM_NODES)
+    let nodes: Vec<SlottedAlohaNode> = (0..NUM_NODES)
         .map(|i| SlottedAlohaNode::new(i + 1, SLOT_PERIOD_US, TX_DURATION_US))
         .collect();
 
@@ -271,6 +271,8 @@ impl NodeHandle for ListenerNode {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig { cases: 512, .. ProptestConfig::default() })]
+
     /// For any combination of node count (2..=20) and duration (100 ms..=2 s):
     ///
     /// * `total_rx   <= successful_tx * num_receivers`  – can't receive more than
@@ -287,7 +289,6 @@ proptest! {
     /// 512 cases (rather than the default 256) ensures enough samples reach the
     /// collision-heavy upper end of the parameter space where the invariants
     /// would actually fire on a buggy scheduler.
-    #[proptest_config(ProptestConfig { cases: 512, .. ProptestConfig::default() })]
     #[test]
     fn metrics_invariants_hold(
         num_nodes in 2usize..=20usize,
