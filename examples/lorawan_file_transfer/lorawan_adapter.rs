@@ -15,18 +15,17 @@ const BUF_SIZE: usize = 255;
 
 /// Derive a per-node PRNG seed from a master seed and a node identifier.
 ///
-/// Mixing uses a Knuth multiplicative hash step so that every `(master_seed,
-/// node_id)` pair produces a distinct, well-distributed seed:
+/// Mixes the inputs with a Fibonacci hashing step so that every
+/// `(master_seed, node_id)` pair yields a distinct, well-distributed seed:
 ///
 /// ```text
 /// per_node_seed = master_seed ^ (node_id.wrapping_mul(0x9e3779b97f4a7c15))
 /// ```
 ///
-/// The constant `0x9e3779b97f4a7c15` is the 64-bit fractional part of the
-/// golden ratio, a standard choice for Fibonacci hashing.  XOR-ing it with
-/// the master seed ensures that two nodes with `node_id = 0` and
-/// `node_id = 1` receive seeds that differ by more than one bit flip, making
-/// simulations reproducible and per-node sequences independent.
+/// `0x9e3779b97f4a7c15` is the 64-bit fractional part of the golden ratio.
+/// XOR-ing it with the master seed ensures adjacent `node_id`s diverge by
+/// more than one bit flip, keeping per-node sequences independent and
+/// simulations reproducible from a single master seed.
 pub fn derive_seed(master_seed: u64, node_id: u64) -> u64 {
     master_seed ^ node_id.wrapping_mul(0x9e3779b97f4a7c15)
 }
@@ -45,10 +44,9 @@ pub struct LoRaWanAdapter {
 impl LoRaWanAdapter {
     /// Create a new adapter for `id`.
     ///
-    /// The RNG seed used internally is **derived** from `master_seed` and the
-    /// numeric value of `node_id` via [`derive_seed`], so each node in a
-    /// multi-node simulation gets an independent, reproducible PRNG stream
-    /// while the caller only needs to track a single master seed constant.
+    /// The internal RNG seed is derived from `master_seed` and `node_id` via
+    /// [`derive_seed`], so each node gets an independent, reproducible PRNG
+    /// stream while the caller tracks only one master seed constant.
     pub fn new(id: NodeId, fragmenter: FileFragmenter, master_seed: u64, node_id: u64) -> Self {
         let seed = derive_seed(master_seed, node_id);
         let radio = SimulatedRadio::new();
@@ -78,9 +76,8 @@ impl LoRaWanAdapter {
         self.tx_start_time + ms as u64 * 1_000
     }
 
-    /// Harvest any transmission that the radio has prepared and stage it
-    /// on the adapter so that `poll_transmit` can drain it without
-    /// touching the radio directly.
+    /// Move any transmission prepared by the radio onto the adapter so that
+    /// `poll_transmit` can drain it without touching the radio directly.
     fn stage_pending_tx(&mut self) {
         if let Some(tx) = self.device.get_radio().take_pending_tx() {
             self.pending_tx = Some(tx);
@@ -126,8 +123,7 @@ impl NodeHandle for LoRaWanAdapter {
             .handle_event(lorawan_device::nb_device::Event::RadioEvent(
                 RadioEvent::Phy(()),
             ));
-        // Stage any transmission the device queued onto the radio before
-        // returning, so poll_transmit only needs to drain the adapter field.
+        // Stage any TX queued by the device so poll_transmit can drain it.
         self.stage_pending_tx();
         match result {
             Ok(Response::TimeoutRequest(ms)) => {
@@ -152,8 +148,8 @@ impl NodeHandle for LoRaWanAdapter {
             let result = self
                 .device
                 .handle_event(lorawan_device::nb_device::Event::TimeoutFired);
-            // Stage any transmission produced by the timeout event before
-            // inspecting the response variant.
+            // Stage any TX produced by the timeout event before inspecting
+            // the response variant.
             self.stage_pending_tx();
             match result {
                 Ok(Response::TimeoutRequest(ms)) => {
