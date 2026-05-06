@@ -178,10 +178,15 @@ mod tests {
     /// `(master_seed, node_id)` pair must always produce the same output.
     /// This is the reproducibility guarantee called out in
     /// ARCHITECTURE.md "Randomness".
+    ///
+    /// The concrete expected value pins the formula output:
+    ///   0xDEAD_BEEF ^ (1u64.wrapping_mul(0x9e3779b97f4a7c15))
+    ///   = 0x0000_0000_DEAD_BEEF ^ 0x9e37_79b9_7f4a_7c15
+    ///   = 0x9e37_79b9_a1e7_c2fa
     #[test]
     fn derive_seed_is_deterministic() {
-        assert_eq!(derive_seed(0xDEAD_BEEF, 1), derive_seed(0xDEAD_BEEF, 1));
-        assert_eq!(derive_seed(0, 0), derive_seed(0, 0));
+        assert_eq!(derive_seed(0xDEAD_BEEF, 1), 0x9e3779b9a1e7c2fa_u64);
+        assert_eq!(derive_seed(0, 0), 0);
     }
 
     /// Distinct node ids under the same master seed must produce distinct
@@ -189,12 +194,12 @@ mod tests {
     #[test]
     fn derive_seed_distinguishes_node_ids() {
         let master = 0xDEAD_BEEF_1234_5678u64;
-        let s0 = derive_seed(master, 0);
         let s1 = derive_seed(master, 1);
         let s2 = derive_seed(master, 2);
-        assert_ne!(s0, s1);
+        let s3 = derive_seed(master, 3);
         assert_ne!(s1, s2);
-        assert_ne!(s0, s2);
+        assert_ne!(s2, s3);
+        assert_ne!(s1, s3);
     }
 
     /// Distinct master seeds must produce distinct per-node seeds for the
