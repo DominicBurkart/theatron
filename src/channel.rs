@@ -83,8 +83,6 @@ struct ActiveTransmission {
     sender: NodeId,
     payload: Vec<u8>,
     sf: u8,
-    #[allow(dead_code)]
-    bandwidth: u32,
     frequency: u32,
     start: SimTime,
     end: SimTime,
@@ -235,7 +233,6 @@ impl Channel {
             sender,
             payload: tx.payload.clone(),
             sf: tx.sf,
-            bandwidth: tx.bandwidth,
             frequency: tx.frequency,
             start: time,
             end,
