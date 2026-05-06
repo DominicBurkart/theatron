@@ -242,7 +242,7 @@ impl Scheduler {
                 }
                 // Second pass: schedule any requested wakes and poll for
                 // follow-on transmissions using only indices and wake times
-                // already captured — no additional Vec needed.
+                // already captured — no second Vec needed.
                 for (i, wake) in receiver_results {
                     if let Some(t) = wake {
                         let node_id = self.nodes[i].node_id();
