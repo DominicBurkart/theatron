@@ -290,52 +290,6 @@ impl Channel {
         events
     }
 
-    /// Return all completed, non-collided transmissions as received frames.
-    ///
-    /// Unlike [`drain_completed`](Channel::drain_completed), this method does **not**
-    /// remove entries from the completed list, allowing the same channel state to be
-    /// queried multiple times. Collided transmissions are silently excluded.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x42],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ch.resolve_at(50_000);
-    /// let received = ch.deliver_to(50_000);
-    /// assert_eq!(received.len(), 1);
-    /// assert_eq!(received[0].payload, vec![0x42]);
-    /// ```
-    pub fn deliver_to(&self, time: SimTime) -> Vec<RxMetadata> {
-        self.completed
-            .iter()
-            .filter(|tx| tx.end <= time && !tx.collided)
-            .map(|tx| {
-                let rssi = self.compute_rssi(tx.tx_power_dbm);
-                RxMetadata {
-                    payload: tx.payload.clone(),
-                    rssi,
-                    snr: self.compute_snr(rssi),
-                    sf: tx.sf,
-                    frequency: tx.frequency,
-                    time: tx.end,
-                }
-            })
-            .collect()
-    }
-
     /// Drain and return all completed transmissions as `CompletedTx` tuples.
     ///
     /// Each entry is `(sender, collided, captured, RxMetadata)`. RSSI and SNR
@@ -817,53 +771,6 @@ mod tests {
             let completed = ch.drain_completed();
             prop_assert!(completed.iter().all(|(_, collided, _, _)| !collided));
         }
-    }
-
-    // --- deliver_to tests ---
-
-    #[test]
-    fn deliver_to_returns_non_collided_frames() {
-        let mut ch = Channel::new();
-        let tx = make_tx(7, 868_100_000, 50_000);
-        ch.begin_transmission(NodeId(1), &tx, 0);
-        ch.resolve_at(50_000);
-
-        let received = ch.deliver_to(50_000);
-        assert_eq!(received.len(), 1);
-        assert_eq!(received[0].payload, vec![0x01, 0x02]);
-        assert_eq!(received[0].sf, 7);
-        assert_eq!(received[0].frequency, 868_100_000);
-        assert_eq!(received[0].time, 50_000);
-        // RSSI = 14 - 100 = -86 dBm; SNR = -86 - (-117) = 31 dB
-        assert!((received[0].rssi - (-86.0_f32)).abs() < 0.001);
-        assert!((received[0].snr - 31.0_f32).abs() < 0.001);
-    }
-
-    #[test]
-    fn deliver_to_excludes_collided_frames() {
-        let mut ch = Channel::new();
-        let tx1 = make_tx(7, 868_100_000, 50_000);
-        let tx2 = make_tx(7, 868_100_000, 50_000);
-        ch.begin_transmission(NodeId(1), &tx1, 0);
-        ch.begin_transmission(NodeId(2), &tx2, 10_000);
-        ch.resolve_at(60_000);
-
-        let received = ch.deliver_to(60_000);
-        assert_eq!(received.len(), 0, "collided frames must not be returned");
-    }
-
-    #[test]
-    fn deliver_to_does_not_drain_completed_list() {
-        let mut ch = Channel::new();
-        let tx = make_tx(7, 868_100_000, 50_000);
-        ch.begin_transmission(NodeId(1), &tx, 0);
-        ch.resolve_at(50_000);
-
-        // Call deliver_to twice; both calls should return the same frame.
-        let first = ch.deliver_to(50_000);
-        let second = ch.deliver_to(50_000);
-        assert_eq!(first.len(), 1);
-        assert_eq!(second.len(), 1, "deliver_to must not drain the completed list");
     }
 
     #[test]
