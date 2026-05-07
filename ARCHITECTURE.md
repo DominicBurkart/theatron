@@ -236,7 +236,7 @@ LoRaWAN is not peer-to-peer — a server must generate join-accept frames and sc
 - Schedules downlink frames into RX1/RX2 windows
 - Manages frame counters and DevAddr assignment
 
-The server implements `Protocol` and participates in the simulation as a node with network-side visibility. It is part of the lora-rs validation example, not theatron core — consistent with the principle that protocol logic lives outside theatron.
+The server implements `Protocol` and participates in the simulation as a node with network-side visibility. It is part of the lora-rs validation example, not theatron core (see [Protocol logic lives outside theatron](#protocol-logic-lives-outside-theatron)).
 
 ### Channel / Medium
 
@@ -263,11 +263,11 @@ Planned interference models:
 - **Selective jamming**: targeted interference against specific SFs or node addresses
 - **Passive eavesdropper**: traffic analysis without injection
 
-### Metrics collection
+### Metrics Collection
 
 A passive observer attached to the simulation that records per-protocol, per-run statistics: throughput (frames/s per SF), PDR, latency distribution, time-on-air, retransmission count, protocol-specific session establishment metrics (e.g. join success rate in LoRaWAN), and protocol-specific counters. Output in a structured format suitable for statistical comparison across runs.
 
-### Hardware measurement tooling (potential expansion)
+### Hardware Measurement Tooling (potential expansion)
 
 To ground simulations in real-world conditions, theatron may include tooling for capturing LoRa hardware connection characteristics — RSSI profiles, SNR distributions, interference patterns, and timing measurements from physical deployments. These measurements would be uploaded as empirical channel model inputs, allowing simulations to reflect actual deployment conditions.
 
@@ -322,7 +322,7 @@ To ground simulations in real-world conditions, theatron may include tooling for
 
 ### SimTime resolution
 
-**`SimTime` is a microsecond-resolution monotonic `u64` counter.** Microseconds are required for `lora-modulation`'s time-on-air calculations (which return `u64` microseconds) and for precise collision detection at high SFs. `lorawan-device`'s `TimestampMs` (`u32` milliseconds) is a subset; conversion is `timestamp_ms = (sim_time / 1_000) as u32`. Symbol times at SF7/125kHz are ~1ms; time-on-air at SF12/125kHz is ~2.5s — both fit comfortably in microsecond `u64`.
+**`SimTime` is a microsecond-resolution monotonic `u64` counter.** Microseconds are required for `lora-modulation`'s time-on-air calculations (which return `u64` microseconds) and for precise collision detection at high SFs. `lorawan-device`'s `TimestampMs` (`u32` milliseconds) is a subset; conversion is `timestamp_ms = (sim_time / 1_000) as u32`. Symbol times at SF7/125 kHz are ~1ms; time-on-air at SF12/125 kHz is ~2.5s — both fit comfortably in microsecond `u64`.
 
 ### Frame representation
 
