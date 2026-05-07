@@ -196,6 +196,12 @@ impl Scheduler {
                 if captured {
                     self.metrics.record_capture();
                 }
+                // Single-pass delivery: on_receive(i) → schedule_wake(i) → handle_poll_transmit(i)
+                // before moving to node i+1. This is safe because on_receive receives only
+                // a cloned RxMetadata value and does not observe channel state mutated by
+                // handle_poll_transmit. Protocol implementations that share mutable state
+                // across on_receive and poll_transmit must not depend on all on_receive calls
+                // completing before any poll_transmit call.
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
                         let next = self.nodes[i].on_receive(frame.clone(), time);
