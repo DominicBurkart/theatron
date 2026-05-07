@@ -3,6 +3,82 @@ use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 
 pub type CompletedTx = (NodeId, bool, bool, RxMetadata);
 
+/// Default LoRa path loss in dB (free-space + typical indoor attenuation baseline).
+pub const LORA_PATH_LOSS_DB: f32 = 100.0;
+
+/// Default LoRa noise floor in dBm (LoRa sensitivity at SF7/125 kHz).
+pub const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
+
+/// Default co-channel rejection threshold in dB (LoRa capture effect threshold).
+pub const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
+
+/// Configuration for physical-layer channel parameters.
+///
+/// Construct with [`ChannelConfig::lora_defaults()`] for LoRa or supply
+/// custom values for other protocols.
+///
+/// # Examples
+///
+/// ```
+/// use theatron::channel::ChannelConfig;
+///
+/// // LoRa defaults
+/// let cfg = ChannelConfig::lora_defaults();
+///
+/// // Custom 802.15.4 / Zigbee-like parameters
+/// let cfg = ChannelConfig {
+///     path_loss_db: 80.0,
+///     noise_floor_dbm: -100.0,
+///     co_channel_rejection_db: 3.0,
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelConfig {
+    /// Path loss applied to every transmission (dB). Higher values mean
+    /// the received signal is weaker.
+    pub path_loss_db: f32,
+
+    /// Noise floor of the receiver (dBm). Used to compute SNR.
+    pub noise_floor_dbm: f32,
+
+    /// Minimum power difference (dB) required for the stronger signal to
+    /// survive a co-channel collision via the capture effect.
+    pub co_channel_rejection_db: f32,
+}
+
+impl ChannelConfig {
+    /// Return the LoRa default parameters used by [`Channel::new()`].
+    ///
+    /// | Parameter               | Value    |
+    /// |-------------------------|-----------|
+    /// | `path_loss_db`          | 100 dB   |
+    /// | `noise_floor_dbm`       | -117 dBm |
+    /// | `co_channel_rejection_db` | 6 dB   |
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::ChannelConfig;
+    /// let cfg = ChannelConfig::lora_defaults();
+    /// assert_eq!(cfg.path_loss_db, 100.0);
+    /// assert_eq!(cfg.noise_floor_dbm, -117.0);
+    /// assert_eq!(cfg.co_channel_rejection_db, 6.0);
+    /// ```
+    pub fn lora_defaults() -> Self {
+        Self {
+            path_loss_db: LORA_PATH_LOSS_DB,
+            noise_floor_dbm: LORA_NOISE_FLOOR_DBM,
+            co_channel_rejection_db: LORA_CO_CHANNEL_REJECTION_DB,
+        }
+    }
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self::lora_defaults()
+    }
+}
+
 struct ActiveTransmission {
     sender: NodeId,
     payload: Vec<u8>,
@@ -16,16 +92,18 @@ struct ActiveTransmission {
 }
 
 /// A simulated wireless channel with collision detection.
+///
+/// Physical-layer parameters are controlled by [`ChannelConfig`]. Use
+/// [`Channel::new()`] for LoRa defaults or [`Channel::with_config()`] to
+/// supply custom parameters for other protocols.
 pub struct Channel {
     active: Vec<ActiveTransmission>,
     completed: Vec<ActiveTransmission>,
-    co_channel_rejection_db: f32,
-    path_loss_db: f32,
-    noise_floor_dbm: f32,
+    config: ChannelConfig,
 }
 
 impl Channel {
-    /// Create a new empty channel.
+    /// Create a new empty channel using LoRa default parameters.
     ///
     /// # Examples
     ///
@@ -34,28 +112,70 @@ impl Channel {
     /// let ch = Channel::new();
     /// ```
     pub fn new() -> Self {
+        Self::with_config(ChannelConfig::lora_defaults())
+    }
+
+    /// Create a new channel with the given [`ChannelConfig`].
+    ///
+    /// This is the primary entry point for non-LoRa protocols.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::{Channel, ChannelConfig};
+    ///
+    /// // Simulate a short-range, low-noise environment (e.g. 802.15.4)
+    /// let ch = Channel::with_config(ChannelConfig {
+    ///     path_loss_db: 80.0,
+    ///     noise_floor_dbm: -100.0,
+    ///     co_channel_rejection_db: 3.0,
+    /// });
+    /// ```
+    pub fn with_config(config: ChannelConfig) -> Self {
         Self {
             active: Vec::new(),
             completed: Vec::new(),
-            co_channel_rejection_db: 6.0,
-            path_loss_db: 100.0,
-            noise_floor_dbm: -117.0,
+            config,
         }
     }
 
+    /// Create a new channel overriding only the co-channel rejection threshold.
+    ///
+    /// All other parameters default to LoRa values. Prefer
+    /// [`Channel::with_config()`] when you want to control multiple parameters.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::Channel;
+    /// let ch = Channel::with_co_channel_rejection(10.0);
+    /// ```
     pub fn with_co_channel_rejection(db: f32) -> Self {
-        Self {
+        Self::with_config(ChannelConfig {
             co_channel_rejection_db: db,
-            ..Self::new()
-        }
+            ..ChannelConfig::lora_defaults()
+        })
+    }
+
+    /// Return a reference to the channel's physical-layer configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::{Channel, ChannelConfig};
+    /// let ch = Channel::new();
+    /// assert_eq!(ch.config().path_loss_db, 100.0);
+    /// ```
+    pub fn config(&self) -> &ChannelConfig {
+        &self.config
     }
 
     pub fn compute_rssi(&self, tx_power_dbm: i8) -> f32 {
-        tx_power_dbm as f32 - self.path_loss_db
+        tx_power_dbm as f32 - self.config.path_loss_db
     }
 
     pub fn compute_snr(&self, rssi: f32) -> f32 {
-        rssi - self.noise_floor_dbm
+        rssi - self.config.noise_floor_dbm
     }
 
     /// Begin a transmission on the channel, returning a `TransmissionStarted` event.
@@ -96,10 +216,10 @@ impl Channel {
                 && active.sf == tx.sf
             {
                 let delta = tx.tx_power_dbm as f32 - active.tx_power_dbm as f32;
-                if delta >= self.co_channel_rejection_db {
+                if delta >= self.config.co_channel_rejection_db {
                     active.collided = true;
                     new_captured = true;
-                } else if delta <= -self.co_channel_rejection_db {
+                } else if delta <= -self.config.co_channel_rejection_db {
                     new_collided = true;
                     active.captured = true;
                 } else {
@@ -170,45 +290,6 @@ impl Channel {
         events
     }
 
-    /// Return all completed, non-collided transmissions as received frames.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// use theatron::types::{NodeId, Transmission};
-    ///
-    /// let mut ch = Channel::new();
-    /// let tx = Transmission {
-    ///     payload: vec![0x42],
-    ///     sf: 7,
-    ///     bandwidth: 125_000,
-    ///     coding_rate: 5,
-    ///     frequency: 868_100_000,
-    ///     duration_us: 50_000,
-    ///     tx_power_dbm: 14,
-    /// };
-    /// ch.begin_transmission(NodeId(1), &tx, 0);
-    /// ch.resolve_at(50_000);
-    /// let received = ch.deliver_to(50_000);
-    /// assert_eq!(received.len(), 1);
-    /// assert_eq!(received[0].payload, vec![0x42]);
-    /// ```
-    pub fn deliver_to(&self, time: SimTime) -> Vec<RxMetadata> {
-        self.completed
-            .iter()
-            .filter(|tx| tx.end <= time && !tx.collided)
-            .map(|tx| RxMetadata {
-                payload: tx.payload.clone(),
-                rssi: self.compute_rssi(tx.tx_power_dbm),
-                snr: self.compute_snr(self.compute_rssi(tx.tx_power_dbm)),
-                sf: tx.sf,
-                frequency: tx.frequency,
-                time: tx.end,
-            })
-            .collect()
-    }
-
     /// Drain and return all completed transmissions as `CompletedTx` tuples.
     ///
     /// Each entry is `(sender, collided, captured, RxMetadata)`. RSSI and SNR
@@ -238,8 +319,8 @@ impl Channel {
     /// assert!(!completed[0].1);
     /// ```
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
-        let path_loss_db = self.path_loss_db;
-        let noise_floor_dbm = self.noise_floor_dbm;
+        let path_loss_db = self.config.path_loss_db;
+        let noise_floor_dbm = self.config.noise_floor_dbm;
         self.completed
             .drain(..)
             .map(|tx| {
@@ -301,14 +382,15 @@ mod tests {
     }
 
     #[test]
-    fn single_transmission_delivers() {
+    fn single_transmission_completes_without_collision() {
         let mut ch = Channel::new();
         let tx = make_tx(7, 868_100_000, 50_000);
         ch.begin_transmission(NodeId(1), &tx, 0);
         ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(50_000);
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 1);
+        assert!(!completed[0].1, "single TX should not collide");
+        assert_eq!(completed[0].3.payload, vec![0x01, 0x02]);
     }
 
     #[test]
@@ -319,8 +401,8 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 0);
+        let completed = ch.drain_completed();
+        assert!(completed.iter().all(|(_, collided, _, _)| *collided));
     }
 
     #[test]
@@ -331,8 +413,9 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 2);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 2);
+        assert!(completed.iter().all(|(_, collided, _, _)| !collided));
     }
 
     #[test]
@@ -343,8 +426,9 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 2);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 2);
+        assert!(completed.iter().all(|(_, collided, _, _)| !collided));
     }
 
     #[test]
@@ -357,8 +441,9 @@ mod tests {
         ch.drain_completed();
         ch.begin_transmission(NodeId(2), &tx2, 60_000);
         ch.resolve_at(110_000);
-        let delivered = ch.deliver_to(110_000);
-        assert_eq!(delivered.len(), 1);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 1);
+        assert!(!completed[0].1);
     }
 
     #[test]
@@ -396,9 +481,13 @@ mod tests {
         ch.begin_transmission(NodeId(1), &strong, 0);
         ch.begin_transmission(NodeId(2), &weak, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].payload, vec![0x01, 0x02]);
+        let completed = ch.drain_completed();
+        let strong_entry = completed
+            .iter()
+            .find(|(id, _, _, _)| *id == NodeId(1))
+            .unwrap();
+        assert!(!strong_entry.1, "strong should not be collided");
+        assert!(strong_entry.2, "strong should be captured");
     }
 
     #[test]
@@ -410,16 +499,10 @@ mod tests {
         ch.begin_transmission(NodeId(2), &weak, 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        let strong_entry = completed
-            .iter()
-            .find(|(id, _, _, _)| *id == NodeId(1))
-            .unwrap();
         let weak_entry = completed
             .iter()
             .find(|(id, _, _, _)| *id == NodeId(2))
             .unwrap();
-        assert!(!strong_entry.1, "strong should not be collided");
-        assert!(strong_entry.2, "strong should be captured");
         assert!(weak_entry.1, "weak should be collided");
     }
 
@@ -431,8 +514,11 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 0, "delta=5 < threshold=6 → both collide");
+        let completed = ch.drain_completed();
+        assert!(
+            completed.iter().all(|(_, collided, _, _)| *collided),
+            "delta=5 < threshold=6 -> both collide"
+        );
     }
 
     #[test]
@@ -443,11 +529,12 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.drain_completed();
+        let non_collided: Vec<_> = completed.iter().filter(|(_, c, _, _)| !c).collect();
         assert_eq!(
-            delivered.len(),
+            non_collided.len(),
             1,
-            "delta=6 == threshold=6 → stronger survives"
+            "delta=6 == threshold=6 -> stronger survives"
         );
     }
 
@@ -461,13 +548,13 @@ mod tests {
         ch.begin_transmission(NodeId(2), &medium, 5_000);
         ch.begin_transmission(NodeId(3), &weak, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
+        let completed = ch.drain_completed();
+        let non_collided: Vec<_> = completed.iter().filter(|(_, c, _, _)| !c).collect();
         assert_eq!(
-            delivered.len(),
+            non_collided.len(),
             1,
             "only strongest survives three-way collision"
         );
-        let completed = ch.drain_completed();
         let strong_entry = completed
             .iter()
             .find(|(id, _, _, _)| *id == NodeId(1))
@@ -483,8 +570,11 @@ mod tests {
         ch.begin_transmission(NodeId(1), &tx1, 0);
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
-        let delivered = ch.deliver_to(60_000);
-        assert_eq!(delivered.len(), 0, "delta=6 < threshold=10 → both collide");
+        let completed = ch.drain_completed();
+        assert!(
+            completed.iter().all(|(_, collided, _, _)| *collided),
+            "delta=6 < threshold=10 -> both collide"
+        );
     }
 
     #[test]
@@ -493,10 +583,143 @@ mod tests {
         let tx = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &tx, 0);
         ch.resolve_at(50_000);
-        let delivered = ch.deliver_to(50_000);
-        assert_eq!(delivered.len(), 1);
-        assert!((delivered[0].rssi - (14.0_f32 - 100.0)).abs() < 0.001);
-        assert!((delivered[0].snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 1);
+        let meta = &completed[0].3;
+        assert!((meta.rssi - (14.0_f32 - 100.0)).abs() < 0.001);
+        assert!((meta.snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
+    }
+
+    // --- ChannelConfig tests ---
+
+    #[test]
+    fn channel_config_lora_defaults_matches_constants() {
+        let cfg = ChannelConfig::lora_defaults();
+        assert_eq!(cfg.path_loss_db, LORA_PATH_LOSS_DB);
+        assert_eq!(cfg.noise_floor_dbm, LORA_NOISE_FLOOR_DBM);
+        assert_eq!(cfg.co_channel_rejection_db, LORA_CO_CHANNEL_REJECTION_DB);
+    }
+
+    #[test]
+    fn channel_config_default_is_lora_defaults() {
+        assert_eq!(ChannelConfig::default(), ChannelConfig::lora_defaults());
+    }
+
+    #[test]
+    fn with_config_exposes_config_accessor() {
+        let cfg = ChannelConfig {
+            path_loss_db: 70.0,
+            noise_floor_dbm: -95.0,
+            co_channel_rejection_db: 3.0,
+        };
+        let ch = Channel::with_config(cfg.clone());
+        assert_eq!(*ch.config(), cfg);
+    }
+
+    /// A channel with lower path loss (shorter range / indoor) produces a higher
+    /// RSSI for the same transmit power.
+    #[test]
+    fn low_path_loss_config_produces_higher_rssi() {
+        let low_loss_cfg = ChannelConfig {
+            path_loss_db: 60.0,
+            noise_floor_dbm: -100.0,
+            co_channel_rejection_db: 3.0,
+        };
+        let mut ch_lora = Channel::new(); // path_loss = 100 dB
+        let mut ch_short_range = Channel::with_config(low_loss_cfg);
+
+        let tx = make_tx_power(7, 868_100_000, 50_000, 14);
+
+        for ch in [&mut ch_lora, &mut ch_short_range] {
+            ch.begin_transmission(NodeId(1), &tx, 0);
+            ch.resolve_at(50_000);
+        }
+
+        let lora_rx = ch_lora.drain_completed();
+        let short_rx = ch_short_range.drain_completed();
+
+        assert_eq!(lora_rx.len(), 1);
+        assert_eq!(short_rx.len(), 1);
+        assert!(
+            short_rx[0].3.rssi > lora_rx[0].3.rssi,
+            "lower path loss must yield higher RSSI: short_range={} lora={}",
+            short_rx[0].3.rssi,
+            lora_rx[0].3.rssi,
+        );
+    }
+
+    /// A channel with a lower noise floor produces a higher SNR for the same signal.
+    #[test]
+    fn lower_noise_floor_produces_higher_snr() {
+        let quiet_cfg = ChannelConfig {
+            path_loss_db: 100.0,
+            noise_floor_dbm: -130.0, // quieter than LoRa default of -117 dBm
+            co_channel_rejection_db: 6.0,
+        };
+        let mut ch_lora = Channel::new();
+        let mut ch_quiet = Channel::with_config(quiet_cfg);
+
+        let tx = make_tx_power(7, 868_100_000, 50_000, 14);
+
+        for ch in [&mut ch_lora, &mut ch_quiet] {
+            ch.begin_transmission(NodeId(1), &tx, 0);
+            ch.resolve_at(50_000);
+        }
+
+        let lora_rx = ch_lora.drain_completed();
+        let quiet_rx = ch_quiet.drain_completed();
+
+        assert_eq!(lora_rx.len(), 1);
+        assert_eq!(quiet_rx.len(), 1);
+        assert!(
+            quiet_rx[0].3.snr > lora_rx[0].3.snr,
+            "lower noise floor must yield higher SNR: quiet={} lora={}",
+            quiet_rx[0].3.snr,
+            lora_rx[0].3.snr,
+        );
+    }
+
+    /// A channel with a higher capture threshold behaves more conservatively:
+    /// a power delta that would survive capture on the LoRa channel causes both
+    /// signals to collide instead.
+    #[test]
+    fn high_capture_threshold_prevents_capture_where_lora_would_survive() {
+        // delta = 6 dB exactly meets the LoRa threshold -> strong survives on LoRa
+        let mut ch_lora = Channel::new(); // threshold = 6 dB
+        let mut ch_strict = Channel::with_config(ChannelConfig {
+            path_loss_db: 100.0,
+            noise_floor_dbm: -117.0,
+            co_channel_rejection_db: 10.0, // stricter: 6 dB delta not enough
+        });
+
+        let strong = make_tx_power(7, 868_100_000, 50_000, 20);
+        let weak = make_tx_power(7, 868_100_000, 50_000, 14);
+
+        for ch in [&mut ch_lora, &mut ch_strict] {
+            ch.begin_transmission(NodeId(1), &strong, 0);
+            ch.begin_transmission(NodeId(2), &weak, 10_000);
+            ch.resolve_at(60_000);
+        }
+
+        let lora_rx = ch_lora.drain_completed();
+        let strict_rx = ch_strict.drain_completed();
+
+        assert_eq!(
+            lora_rx
+                .iter()
+                .filter(|(_, collided, _, _)| !collided)
+                .count(),
+            1,
+            "LoRa threshold=6: strong signal must survive"
+        );
+        assert_eq!(
+            strict_rx
+                .iter()
+                .filter(|(_, collided, _, _)| !collided)
+                .count(),
+            0,
+            "strict threshold=10: both collide at delta=6"
+        );
     }
 
     proptest! {
@@ -548,5 +771,79 @@ mod tests {
             let completed = ch.drain_completed();
             prop_assert!(completed.iter().all(|(_, collided, _, _)| !collided));
         }
+    }
+
+    #[test]
+    fn test_no_active_after_resolve() {
+        let mut ch = Channel::new();
+        let tx1 = make_tx(7, 868_100_000, 50_000);
+        let tx2 = make_tx(7, 868_300_000, 30_000);
+        let tx3 = make_tx(8, 868_100_000, 80_000);
+        ch.begin_transmission(NodeId(1), &tx1, 0);
+        ch.begin_transmission(NodeId(2), &tx2, 10_000);
+        ch.begin_transmission(NodeId(3), &tx3, 20_000);
+
+        let resolve_time = 50_000;
+        ch.resolve_at(resolve_time);
+
+        // tx1 (end=50k) and tx2 (end=40k) resolved; tx3 (end=100k) still active.
+        let events = ch.resolve_at(100_000);
+        assert_eq!(
+            events.len(),
+            1,
+            "only the transmission ending at 100k should remain active"
+        );
+
+        // After full resolution, no active transmissions should remain.
+        let events_empty = ch.resolve_at(200_000);
+        assert_eq!(
+            events_empty.len(),
+            0,
+            "no transmissions should remain active after resolving past all end times"
+        );
+    }
+
+    #[test]
+    fn test_collision_state_consistency() {
+        let mut ch = Channel::new();
+        let tx1 = make_tx(7, 868_100_000, 50_000);
+        let tx2 = make_tx(7, 868_100_000, 50_000);
+        ch.begin_transmission(NodeId(1), &tx1, 0);
+        ch.begin_transmission(NodeId(2), &tx2, 10_000);
+
+        ch.resolve_at(60_000);
+        let completed = ch.drain_completed();
+        assert_eq!(completed.len(), 2);
+
+        for (sender, collided, captured, _meta) in &completed {
+            assert!(
+                *collided,
+                "sender {:?} should be collided for equal-power overlap",
+                sender
+            );
+            assert!(
+                !*captured,
+                "sender {:?} should not be captured for equal-power overlap",
+                sender
+            );
+        }
+
+        // Verify collided frames are not delivered.
+        let mut ch2 = Channel::new();
+        let tx_a = make_tx(7, 868_100_000, 50_000);
+        let tx_b = make_tx(7, 868_100_000, 50_000);
+        ch2.begin_transmission(NodeId(10), &tx_a, 0);
+        ch2.begin_transmission(NodeId(11), &tx_b, 5_000);
+        ch2.resolve_at(55_000);
+        let delivered: Vec<_> = ch2
+            .drain_completed()
+            .into_iter()
+            .filter(|(_, collided, _, _)| !*collided)
+            .collect();
+        assert_eq!(
+            delivered.len(),
+            0,
+            "equal-power collisions should not be delivered"
+        );
     }
 }

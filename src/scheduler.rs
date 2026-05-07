@@ -91,6 +91,9 @@ pub struct Scheduler {
 impl Scheduler {
     /// Create a new scheduler that will stop at `end_time` microseconds.
     ///
+    /// Uses LoRa default channel parameters. To use a different protocol's
+    /// physical-layer parameters, see [`Scheduler::with_channel`].
+    ///
     /// # Examples
     ///
     /// ```
@@ -99,9 +102,33 @@ impl Scheduler {
     /// assert_eq!(sched.current_time(), 0);
     /// ```
     pub fn new(end_time: SimTime) -> Self {
+        Self::with_channel(end_time, Channel::new())
+    }
+
+    /// Create a new scheduler with a custom [`Channel`].
+    ///
+    /// Use this to simulate protocols other than LoRa by supplying a
+    /// [`Channel`] constructed with [`Channel::with_config`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use theatron::channel::{Channel, ChannelConfig};
+    /// use theatron::scheduler::Scheduler;
+    ///
+    /// // 802.15.4-like parameters
+    /// let channel = Channel::with_config(ChannelConfig {
+    ///     path_loss_db: 80.0,
+    ///     noise_floor_dbm: -100.0,
+    ///     co_channel_rejection_db: 3.0,
+    /// });
+    /// let sched = Scheduler::with_channel(1_000_000, channel);
+    /// assert_eq!(sched.current_time(), 0);
+    /// ```
+    pub fn with_channel(end_time: SimTime, channel: Channel) -> Self {
         Self {
             events: BinaryHeap::new(),
-            channel: Channel::new(),
+            channel,
             nodes: Vec::new(),
             interferers: Vec::new(),
             metrics: MetricsCollector::new(),
@@ -196,7 +223,7 @@ impl Scheduler {
                 if captured {
                     self.metrics.record_capture();
                 }
-                // Single-pass delivery: on_receive(i) → schedule_wake(i) → handle_poll_transmit(i)
+                // Single-pass delivery: on_receive(i) -> schedule_wake(i) -> handle_poll_transmit(i)
                 // before moving to node i+1. This is safe because on_receive receives only
                 // a cloned RxMetadata value and does not observe channel state mutated by
                 // handle_poll_transmit. Protocol implementations that share mutable state
@@ -311,6 +338,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::ChannelConfig;
     use crate::types::{ChannelEvent, Transmission};
     use proptest::prelude::*;
 
@@ -709,6 +737,81 @@ mod tests {
 
         assert!(sched.metrics.total_collisions > 0);
         assert_eq!(sched.metrics.total_rx, 0, "collision prevents delivery");
+    }
+
+    /// Verify that `Scheduler::with_channel` propagates custom physical-layer
+    /// parameters: a strict capture threshold (10 dB) means a 6 dB delta that
+    /// would survive on the default LoRa channel instead collides.
+    #[test]
+    fn with_channel_uses_custom_config() {
+        let strict_channel = Channel::with_config(ChannelConfig {
+            path_loss_db: 100.0,
+            noise_floor_dbm: -117.0,
+            co_channel_rejection_db: 10.0, // stricter than LoRa default of 6 dB
+        });
+
+        // With the default LoRa channel (threshold=6), delta=6 -> strong survives.
+        let mut sched_lora = Scheduler::new(200_000);
+        let mut strong_lora = SimpleNode::new(1);
+        strong_lora.queue_tx(Transmission {
+            payload: vec![0xAB],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 20,
+        });
+        let mut weak_lora = SimpleNode::new(2);
+        weak_lora.queue_tx(Transmission {
+            payload: vec![0xCD],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 14,
+        });
+        sched_lora.add_node(Box::new(strong_lora), Some(0));
+        sched_lora.add_node(Box::new(weak_lora), Some(10_000));
+        sched_lora.add_node(Box::new(SimpleNode::new(3)), None);
+        sched_lora.run();
+
+        // With the strict channel (threshold=10), delta=6 -> both collide.
+        let mut sched_strict = Scheduler::with_channel(200_000, strict_channel);
+        let mut strong_strict = SimpleNode::new(1);
+        strong_strict.queue_tx(Transmission {
+            payload: vec![0xAB],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 20,
+        });
+        let mut weak_strict = SimpleNode::new(2);
+        weak_strict.queue_tx(Transmission {
+            payload: vec![0xCD],
+            sf: 7,
+            bandwidth: 125_000,
+            coding_rate: 5,
+            frequency: 868_100_000,
+            duration_us: 50_000,
+            tx_power_dbm: 14,
+        });
+        sched_strict.add_node(Box::new(strong_strict), Some(0));
+        sched_strict.add_node(Box::new(weak_strict), Some(10_000));
+        sched_strict.add_node(Box::new(SimpleNode::new(3)), None);
+        sched_strict.run();
+
+        assert_eq!(
+            sched_lora.metrics.total_rx, 2,
+            "LoRa channel: strong signal captured, delivered to both other nodes"
+        );
+        assert_eq!(
+            sched_strict.metrics.total_rx, 0,
+            "strict channel: delta=6 < threshold=10, both collide, nothing delivered"
+        );
     }
 
     proptest! {
