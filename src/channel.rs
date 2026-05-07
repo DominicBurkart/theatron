@@ -13,6 +13,11 @@ struct ActiveTransmission {
     collided: bool,
     tx_power_dbm: i8,
     captured: bool,
+    // `bandwidth` is intentionally absent: it is not used in collision
+    // detection or SNR/RSSI calculation in the current channel model.
+    // When bandwidth-based orthogonality checks are added (see ARCHITECTURE.md
+    // "lora-modulation" integration), add it back here with a corresponding
+    // test rather than restoring the old #[allow(dead_code)] annotation.
 }
 
 /// A simulated wireless channel with collision detection.
@@ -540,11 +545,12 @@ mod tests {
         ch.resolve_at(50_000);
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 1);
-        assert!(
-            !completed[0].1,
-            "zero-payload TX must not be marked collided"
-        );
-        assert_eq!(completed[0].3.payload, Vec::<u8>::new());
+        // Use destructuring instead of positional tuple indexing so that
+        // any future reordering of CompletedTx fields causes a compile error
+        // rather than a silent semantic mismatch.
+        let (_, collided, _, ref metadata) = completed[0];
+        assert!(!collided, "zero-payload TX must not be marked collided");
+        assert_eq!(metadata.payload, Vec::<u8>::new());
     }
 
     proptest! {
@@ -597,25 +603,36 @@ mod tests {
             prop_assert!(completed.iter().all(|(_, collided, _, _)| !collided));
         }
 
-        // Capture-effect monotonicity: when power1 > power2 + 6 dB, only the
-        // stronger signal must be delivered.  The weaker one must be dropped.
-        // This invariant must hold for any combination of legal power values.
+        // Capture-effect monotonicity: when power_strong > power_weak + 6 dB,
+        // only the stronger signal must be delivered.  The weaker one must be
+        // dropped.  This invariant must hold for any combination of legal power
+        // values and regardless of which transmitter starts first — ensuring
+        // the capture logic does not accidentally favour the first-inserted
+        // transmitter over the higher-power one.
         #[test]
         fn capture_monotonic_in_power_delta(
-            power1 in -20i8..=30i8,
-            power2 in -20i8..=30i8,
+            power_strong in -20i8..=30i8,
+            power_weak   in -20i8..=30i8,
+            strong_starts_first in proptest::bool::ANY,
         ) {
             // Ensure there is strictly more than 6 dB difference.
-            prop_assume!((power1 as i16 - power2 as i16) > 6);
+            prop_assume!((power_strong as i16 - power_weak as i16) > 6);
 
             let duration = 50_000u64;
-            let tx1 = make_tx_power(7, 868_100_000, duration, power1);
-            let tx2 = make_tx_power(7, 868_100_000, duration, power2);
+            let tx_strong = make_tx_power(7, 868_100_000, duration, power_strong);
+            let tx_weak   = make_tx_power(7, 868_100_000, duration, power_weak);
 
-            // tx1 starts first; tx2 starts later so they overlap.
+            // Vary which transmitter starts first so the test can detect bugs
+            // where capture favours the first-inserted entry regardless of power.
+            let (t_strong, t_weak) = if strong_starts_first {
+                (0u64, 10_000u64)
+            } else {
+                (10_000u64, 0u64)
+            };
+
             let mut ch = Channel::new();
-            ch.begin_transmission(NodeId(1), &tx1, 0);
-            ch.begin_transmission(NodeId(2), &tx2, 10_000);
+            ch.begin_transmission(NodeId(1), &tx_strong, t_strong);
+            ch.begin_transmission(NodeId(2), &tx_weak,   t_weak);
             ch.resolve_at(duration + 10_000);
             let completed = ch.drain_completed();
 

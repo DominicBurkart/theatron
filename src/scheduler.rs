@@ -188,6 +188,16 @@ impl Scheduler {
     }
 
     fn deliver_completed_to_nodes(&mut self, time: SimTime) {
+        // Semantics: for each completed frame we iterate nodes in a single
+        // interleaved pass — on_receive is called, the optional wake is
+        // scheduled, and handle_poll_transmit is called, all before moving
+        // to the next node.  The old two-pass approach (collect all wakes,
+        // then call all poll_transmits) gave every node a chance to process
+        // the receive event before any poll.  If two nodes share state via
+        // Rc<RefCell<...>> or similar, the ordering within a single
+        // TxComplete step may differ from the old behaviour.  All current
+        // nodes are independent, so no regression is present; document here
+        // if mutually-aware nodes are added in the future.
         let completed: Vec<CompletedTx> = self.channel.drain_completed();
         for (sender, collided, captured, frame) in completed {
             if collided {
@@ -724,12 +734,19 @@ mod tests {
     // A node whose on_receive schedules a future wake, at which point it
     // transmits a reply.  This exercises the path where on_receive returns
     // Some(wake_time) → Wake event is scheduled → update() is called →
-    // poll_transmit() is called and the reply TX is counted.
+    // poll_transmit() is called at the deferred wake time and the reply TX
+    // is counted.
+    //
+    // The guard `t >= ready_at` in poll_transmit ensures the reply is NOT
+    // emitted on the immediate post-receive poll (which fires at the
+    // TxComplete time), only on the deferred Wake at `ready_at`.
     struct DelayedReplyNode {
         id: NodeId,
         reply_tx: Option<Transmission>,
         reply_delay_us: u64,
-        poll_transmit_calls: u32,
+        /// Absolute sim-time at which poll_transmit may emit the reply.
+        /// Set inside on_receive; poll_transmit returns None before this time.
+        ready_at: SimTime,
     }
 
     impl NodeHandle for DelayedReplyNode {
@@ -738,13 +755,20 @@ mod tests {
         }
 
         fn on_receive(&mut self, _f: RxMetadata, time: SimTime) -> Option<SimTime> {
-            // Schedule a wake in the future; the reply is sent from there.
-            Some(time + self.reply_delay_us)
+            // Record when we will be ready to reply and schedule the wake.
+            self.ready_at = time + self.reply_delay_us;
+            Some(self.ready_at)
         }
 
-        fn poll_transmit(&mut self, _t: SimTime) -> Option<Transmission> {
-            self.poll_transmit_calls += 1;
-            self.reply_tx.take()
+        fn poll_transmit(&mut self, t: SimTime) -> Option<Transmission> {
+            // Only emit the reply at or after the deferred wake time.
+            // Returning None on the immediate post-receive poll ensures the
+            // deferred-wake path — not the immediate path — carries the TX.
+            if t >= self.ready_at && self.ready_at > 0 {
+                self.reply_tx.take()
+            } else {
+                None
+            }
         }
 
         fn update(&mut self, _t: SimTime) -> Option<SimTime> {
@@ -755,9 +779,11 @@ mod tests {
     #[test]
     fn on_receive_wake_triggers_poll_transmit_and_reply() {
         // Sender fires at t=0.  DelayedReplyNode receives the TX at t=50_000,
-        // schedules a wake at t=60_000, and then sends its reply from
-        // poll_transmit.  Verify that the reply TX is counted and airtime
-        // is the sum of both durations.
+        // sets ready_at=60_000 and schedules a wake at t=60_000.  The
+        // immediate post-receive poll_transmit at t=50_000 returns None
+        // (t < ready_at).  The Wake fires at t=60_000: update() returns None,
+        // handle_poll_transmit() calls poll_transmit(60_000) which takes the
+        // reply and returns it — exercising the full deferred-reply path.
         let mut sched = Scheduler::new(200_000);
 
         let mut sender = SimpleNode::new(1);
@@ -769,7 +795,7 @@ mod tests {
                 id: NodeId(2),
                 reply_tx: Some(make_tx(7, 868_100_000, 30_000)),
                 reply_delay_us: 10_000,
-                poll_transmit_calls: 0,
+                ready_at: 0,
             }),
             None,
         );
@@ -787,62 +813,24 @@ mod tests {
         );
     }
 
-    // An interferer that counts every ChannelEvent it receives via observe().
-    struct CountingInterferer {
-        tx: Option<Transmission>,
-        observe_count: usize,
-    }
-
-    impl InterferenceSource for CountingInterferer {
-        fn observe(&mut self, _event: &ChannelEvent, _time: SimTime) {
-            self.observe_count += 1;
-        }
-
-        fn poll_inject(&mut self, _time: SimTime) -> Option<Transmission> {
-            self.tx.take()
-        }
-
-        fn next_poll_time(&self, _current_time: SimTime) -> Option<SimTime> {
-            None
-        }
-    }
-
     #[test]
     fn interferer_observe_called_for_node_tx() {
         // One node transmits once.  The scheduler calls observe() on all
         // registered interferers twice for each node TX: once at TX-start
         // (TransmissionStarted) and once at TX-complete (TransmissionCompleted).
-        let mut sched = Scheduler::new(200_000);
-
-        let mut node = SimpleNode::new(1);
-        node.queue_tx(make_tx(7, 868_100_000, 50_000));
-        sched.add_node(Box::new(node), Some(0));
-
-        // Use a raw pointer trick: wrap the interferer, add it to the
-        // scheduler, then inspect via metrics after the run.
-        // Because we can't get the interferer back from the scheduler, we
-        // use a shared counter embedded in the interferer's struct and read
-        // the scheduler metrics instead to verify that the correct number of
-        // events were seen.
         //
-        // Scheduler calls observe() at two points per node TX:
-        //   1. handle_poll_transmit – TransmissionStarted
-        //   2. TxComplete handler   – TransmissionCompleted
-        // So a single node TX → 2 observe() calls.
-        let interferer = CountingInterferer {
-            tx: None,
-            observe_count: 0,
-        };
-
-        // We cannot read observe_count after move, so we use a second
-        // injecting interferer that counts its own observations instead.
-        // We verify indirectly: the TX was counted, meaning all the
-        // scheduler paths that call observe() were exercised.  For a
-        // direct count we need an Rc<Cell<_>> or similar.
+        // The interferer's first_poll is set to end_time (200_000) so it is
+        // polled exactly once, at the boundary.  Because the event loop breaks
+        // on event.time > end_time (strictly greater), the poll at t=200_000
+        // is processed.  poll_inject returns None so no injection occurs and
+        // the observe count stays at 2.  If poll_inject returned Some(...)
+        // the resulting TxComplete would be scheduled beyond end_time and
+        // silently skipped, but the observe call for TransmissionStarted
+        // would still fire — worth noting if this interferer is ever made
+        // injecting.
         use std::cell::Cell;
         use std::rc::Rc;
 
-        // Rebuild with a shared counter using interior mutability.
         struct SharedCountInterferer {
             counter: Rc<Cell<usize>>,
         }
@@ -858,8 +846,6 @@ mod tests {
             }
         }
 
-        drop(interferer); // drop the unused one
-
         let counter = Rc::new(Cell::new(0usize));
         let mut sched2 = Scheduler::new(200_000);
         let mut node2 = SimpleNode::new(1);
@@ -869,8 +855,9 @@ mod tests {
             Box::new(SharedCountInterferer {
                 counter: Rc::clone(&counter),
             }),
-            // First poll is after the TX completes so the interferer itself
-            // does not inject (it would collide and confuse the count).
+            // First poll is at end_time so the interferer does not inject
+            // before the node TX completes (injection would collide and
+            // alter the count).
             200_000,
         );
         sched2.run();
@@ -892,6 +879,13 @@ mod tests {
         // An interferer that injects one TX should observe its own
         // TransmissionStarted event (called inside InterferencePoll handling)
         // and the TransmissionCompleted event (called in TxComplete handler).
+        //
+        // The two exact call sites exercised:
+        //   1. InterferencePoll handler: after begin_transmission, the loop
+        //      `for i in 0..self.interferers.len()` calls observe(TransmissionStarted).
+        //   2. TxComplete handler: the loop `for ch_event in &completed_events`
+        //      calls observe(TransmissionCompleted) for every interferer.
+        // Total = 2 observe() calls for a single injected TX.
         use std::cell::Cell;
         use std::rc::Rc;
 
