@@ -4,13 +4,13 @@ use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 pub type CompletedTx = (NodeId, bool, bool, RxMetadata);
 
 /// Default LoRa path loss in dB (free-space + typical indoor attenuation baseline).
-pub const LORA_PATH_LOSS_DB: f32 = 100.0;
+const LORA_PATH_LOSS_DB: f32 = 100.0;
 
 /// Default LoRa noise floor in dBm (LoRa sensitivity at SF7/125 kHz).
-pub const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
+const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
 
 /// Default co-channel rejection threshold in dB (LoRa capture effect threshold).
-pub const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
+const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
 
 /// Configuration for physical-layer channel parameters.
 ///
