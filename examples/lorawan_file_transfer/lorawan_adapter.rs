@@ -126,8 +126,6 @@ impl NodeHandle for LoRaWanAdapter {
             .handle_event(lorawan_device::nb_device::Event::RadioEvent(
                 RadioEvent::Phy(()),
             ));
-        // Stage any transmission the device queued onto the radio before
-        // returning, so poll_transmit only needs to drain the adapter field.
         self.stage_pending_tx();
         match result {
             Ok(Response::TimeoutRequest(ms)) => {
@@ -152,8 +150,6 @@ impl NodeHandle for LoRaWanAdapter {
             let result = self
                 .device
                 .handle_event(lorawan_device::nb_device::Event::TimeoutFired);
-            // Stage any transmission produced by the timeout event before
-            // inspecting the response variant.
             self.stage_pending_tx();
             match result {
                 Ok(Response::TimeoutRequest(ms)) => {

@@ -223,10 +223,8 @@ impl Scheduler {
                 if captured {
                     self.metrics.record_capture();
                 }
-                // First pass: call on_receive on every non-sender node and
-                // collect (index, optional_wake) so we can call self.schedule
-                // and self.handle_poll_transmit in a second pass without
-                // holding a borrow on self.nodes.
+                // Two-pass to avoid holding a borrow on self.nodes while
+                // calling self.schedule / self.handle_poll_transmit.
                 let mut receiver_results: Vec<(usize, Option<SimTime>)> = Vec::new();
                 for i in 0..self.nodes.len() {
                     if self.nodes[i].node_id() != sender {
@@ -236,9 +234,6 @@ impl Scheduler {
                         receiver_results.push((i, next));
                     }
                 }
-                // Second pass: schedule any requested wakes and poll for
-                // follow-on transmissions using only indices and wake times
-                // already captured — no second Vec needed.
                 for (i, wake) in receiver_results {
                     if let Some(t) = wake {
                         let node_id = self.nodes[i].node_id();
