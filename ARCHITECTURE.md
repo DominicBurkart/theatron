@@ -211,17 +211,18 @@ The `lorawan-device` state machine calls `handle_event` on `SimulatedRadio`; the
 
 #### Adapter state ownership
 
-`lorawan-device::nb_device::Device<R, RNG, N, D>` bundles the radio, RNG, and MAC state into a single struct. The adapter's `Protocol::State` wraps it along with bookkeeping theatron needs:
+`lorawan-device::nb_device::Device<R, RNG, N>` bundles the radio, RNG, and MAC state into a single struct. The adapter's `Protocol::State` wraps it along with bookkeeping theatron needs:
 
 ```rust
 struct LorawanState {
-    device: nb_device::Device<SimulatedRadio, Prng, 256, 1>,
+    device: nb_device::Device<SimulatedRadio, Prng, 255>,
     pending_tx: Option<Transmission>,
-    next_wake: Option<SimTime>,
+    pending_timeout_ms: Option<u32>,
+    tx_start_time: SimTime,
 }
 ```
 
-`pending_tx` is populated when the device issues a `TxRequest` through `SimulatedRadio::handle_event`. `next_wake` is updated from `nb_device::Response::TimeoutRequest(ms)` and returned from the adapter's `Protocol` methods as `Option<SimTime>`. Since `device` is inside `&mut LorawanState`, mutable access flows correctly through all `Protocol` method signatures.
+`pending_tx` is populated when the device issues a `TxRequest` through `SimulatedRadio::handle_event`. `pending_timeout_ms` is updated from `nb_device::Response::TimeoutRequest(ms)`; combined with `tx_start_time`, the adapter converts it to a `SimTime` and returns it from `Protocol::on_receive` / `update`. Since `device` is inside `&mut LorawanState`, mutable access flows correctly through all `Protocol` method signatures.
 
 #### Timer contract
 
@@ -240,7 +241,7 @@ The server implements `Protocol` and participates in the simulation as a node wi
 
 ### Channel / Medium
 
-A shared simulation object that models the physical wireless channel: propagation delay, collision detection, RSSI and SNR derivation, SF orthogonality approximation, and time-on-air gating. The channel model is parameterized; in the validation case it is configured for LoRa using `lora-modulation`. The channel carries `Vec<u8>` payloads alongside `TxMetadata` (SF, bandwidth, frequency, TX power). Protocol adapters parse the raw bytes via their respective crates; the channel remains format-agnostic.
+A shared simulation object that models the physical wireless channel: propagation delay, collision detection, RSSI and SNR derivation, SF orthogonality approximation, and time-on-air gating. The channel model is parameterized; in the validation case it is configured for LoRa using `lora-modulation`. The channel carries `Vec<u8>` payloads alongside `Transmission` (SF, bandwidth, frequency, TX power). Protocol adapters parse the raw bytes via their respective crates; the channel remains format-agnostic.
 
 All communication flows through the channel — protocols and interference sources do not interact directly.
 
@@ -326,7 +327,7 @@ To ground simulations in real-world conditions, theatron may include tooling for
 
 ### Frame representation
 
-**Concrete: the channel carries `Vec<u8>` + `TxMetadata`.** Protocol adapters use their respective crates (e.g. `lorawan` for LoRaWAN) to parse and construct frames. The channel stays format-agnostic; type safety lives at the protocol layer, not the channel layer.
+**Concrete: the channel carries `Vec<u8>` + `Transmission`.** Protocol adapters use their respective crates (e.g. `lorawan` for LoRaWAN) to parse and construct frames. The channel stays format-agnostic; type safety lives at the protocol layer, not the channel layer.
 
 ### Interference source visibility
 
