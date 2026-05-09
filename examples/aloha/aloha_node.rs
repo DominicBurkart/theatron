@@ -3,13 +3,8 @@ use theatron::time::SimTime;
 use theatron::traits::TrafficModel;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
-// Default LoRa EU868 radio parameters. These are standard values used across
-// all AlohaNode instances. `sf` and `frequency` remain caller-supplied because
-// they are the primary parameters for channel / orthogonality experiments.
-// TODO: consider accepting all RF params via an AlohaConfig struct and
-// implementing the `Protocol` trait (per ARCHITECTURE.md) so that this example
-// demonstrates the idiomatic theatron integration pattern rather than wiring
-// directly to `NodeHandle`.
+// Default LoRa EU868 radio parameters. `sf` and `frequency` are caller-supplied
+// (they are the primary channel / orthogonality knobs for experiments).
 const DEFAULT_BANDWIDTH_HZ: u32 = 125_000; // EU868 standard bandwidth
 const DEFAULT_CODING_RATE: u8 = 5; // 4/5 coding rate
 const DEFAULT_TX_POWER_DBM: i8 = 14; // 14 dBm, legal limit for EU868
@@ -99,14 +94,9 @@ impl NodeHandle for AlohaNode {
         self.id
     }
 
-    /// AlohaNode senders do not need to receive frames in the current
-    /// "transmit and forget" model. No ACK mechanism exists yet.
-    ///
-    /// NOTE: if a future implementation adds ACK-based retransmission, this
-    /// method is the hook for detecting delivery confirmation. Backoff
-    /// retransmission on collision also requires a new `on_tx_complete` callback
-    /// in the `NodeHandle` trait (the scheduler currently discards collision
-    /// events without notifying the sender).
+    /// Pure ALOHA is "transmit and forget": no ACK or retransmission, so the
+    /// sender ignores incoming frames. ACK-based retransmission would use this
+    /// hook plus a new `on_tx_complete` scheduler callback for collision backoff.
     fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
         None
     }

@@ -1,4 +1,4 @@
-use lora_modulation::{Bandwidth, BaseBandModulationParams, CodingRate, SpreadingFactor};
+use lora_modulation::BaseBandModulationParams;
 use lorawan_device::Timings;
 use lorawan_device::nb_device::radio::{Event, PhyRxTx, Response, RfConfig, RxQuality, TxConfig};
 
@@ -135,6 +135,7 @@ impl Timings for SimulatedRadio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lora_modulation::{Bandwidth, CodingRate, SpreadingFactor};
 
     const TEST_SF: u8 = 7;
     const TEST_FREQ: u32 = 868_100_000;

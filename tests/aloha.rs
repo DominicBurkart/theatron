@@ -2,21 +2,11 @@ use theatron::scheduler::{NodeHandle, Scheduler};
 use theatron::time::SimTime;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
-// --- Test helpers ---
-//
-// NOTE: These tests use local `PeriodicSender` / `Receiver` helpers rather than
-// `AlohaNode`/`AlohaReceiver` from `examples/aloha/aloha_node.rs`. This is
-// intentional for now: the example types are compiled only as part of the
-// `aloha` example binary (not as a library), so they cannot be `use`-imported
-// from integration tests without additional crate restructuring.
-//
-// As a result, these tests validate that the *scheduler and channel model*
-// correctly handle ALOHA-like transmission patterns (collision, SF orthogonality,
-// frequency orthogonality, sequential delivery). They do NOT exercise `AlohaNode`
-// end-to-end. Wiring the integration tests to `AlohaNode` is tracked as a
-// follow-up: it requires either moving shared types into the library crate or
-// using `#[path = "../examples/aloha/aloha_node.rs"] mod aloha_node;` (which
-// becomes meaningful once `AlohaNode` has retransmission logic worth testing).
+// These tests use local `PeriodicSender` / `Receiver` helpers because the
+// example types in [`examples/aloha/aloha_node.rs`](../examples/aloha/aloha_node.rs)
+// compile only as part of the `aloha` example binary. They validate the
+// scheduler + channel model for ALOHA-like transmission patterns (collision,
+// SF/frequency orthogonality, capture effect) rather than `AlohaNode` itself.
 
 fn make_tx(payload: Vec<u8>, sf: u8, frequency: u32, duration_us: u64) -> Transmission {
     Transmission {
@@ -329,15 +319,16 @@ fn capture_effect_recorded_in_metrics() {
     // The captured frame is delivered to all non-sender nodes: the weak sender
     // (NodeId(2)) and the receiver (NodeId(99)) — consistent with how the
     // scheduler delivers any successful TX to every non-sender node.
-    assert_eq!(sched.metrics.total_captures, 1, "expected one capture event");
     assert_eq!(
-        sched.metrics.total_collisions,
-        1,
+        sched.metrics.total_captures, 1,
+        "expected one capture event"
+    );
+    assert_eq!(
+        sched.metrics.total_collisions, 1,
         "weak sender should be marked collided"
     );
     assert_eq!(
-        sched.metrics.total_rx,
-        2,
+        sched.metrics.total_rx, 2,
         "captured frame delivered to 2 non-sender nodes (weak sender + receiver)"
     );
 }
