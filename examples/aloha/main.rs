@@ -6,12 +6,11 @@ use theatron::types::NodeId;
 
 use aloha_node::{AlohaNode, AlohaReceiver, PeriodicTraffic};
 
-/// Simulation parameters.
 const NUM_SENDERS: u32 = 5;
 const PACKETS_PER_SENDER: usize = 20;
-const TX_INTERVAL_US: u64 = 2_000_000; // 2s between packets
-const POLL_INTERVAL_US: u64 = 500_000; // 500ms poll interval
-const TX_DURATION_US: u64 = 200_000; // 200ms per packet (typical LoRa SF7)
+const TX_INTERVAL_US: u64 = 2_000_000; // 2 s between packets
+const POLL_INTERVAL_US: u64 = 500_000; // 500 ms poll interval
+const TX_DURATION_US: u64 = 200_000; // 200 ms per packet (typical LoRa SF7)
 const SF: u8 = 7;
 const FREQUENCY: u32 = 868_100_000;
 const SIM_DURATION_MS: u32 = 120_000; // 2 minutes
@@ -20,13 +19,11 @@ fn main() {
     let sim_duration = ms_to_sim_time(SIM_DURATION_MS);
     let mut scheduler = Scheduler::new(sim_duration);
 
-    // Add a passive receiver (NodeId 0).
     scheduler.add_node(Box::new(AlohaReceiver::new(NodeId(0))), None);
 
-    // Add ALOHA sender nodes.
     for i in 1..=NUM_SENDERS {
         let traffic = PeriodicTraffic::new(
-            vec![i as u8; 10], // 10-byte payload tagged with sender id
+            vec![i as u8; 10], // payload byte identifies sender
             TX_INTERVAL_US,
             PACKETS_PER_SENDER,
         );
@@ -50,9 +47,8 @@ fn main() {
     let m = &scheduler.metrics;
     let expected_tx = (NUM_SENDERS as u64) * (PACKETS_PER_SENDER as u64);
 
-    // PDR: fraction of transmitted packets successfully received by the receiver
-    // (NodeId 0). Each TX can reach the receiver at most once, so the denominator
-    // is simply the number of expected transmissions.
+    // PDR denominator is expected_tx: each TX can reach NodeId(0) at most once,
+    // so collisions reduce the numerator without changing the denominator.
     let receiver_rx = m.node_rx_count(NodeId(0)) as f64;
     let pdr = if expected_tx > 0 {
         receiver_rx / expected_tx as f64
