@@ -18,7 +18,12 @@ path = "src/main.rs"
 name = "lorawan_file_transfer"
 path = "examples/lorawan_file_transfer/main.rs"
 
+[[example]]
+name = "aloha"
+path = "examples/aloha/main.rs"
+
 [dependencies]
+rand_core = { version = "0.6", default-features = false, optional = true } # optional; see [features] below
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
@@ -26,8 +31,11 @@ lorawan-device = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7
 lorawan = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7774bd98874f1e5abfa9ac62eface81", package = "lorawan" }
 lora-modulation = { git = "https://github.com/lora-rs/lora-rs", rev = "597beac2a7774bd98874f1e5abfa9ac62eface81" }
 proptest = "1"
-rand_core = { version = "0.6", default-features = false }
 
 [profile.release]
 lto = true
 codegen-units = 1
+
+[features]
+default = ["prng"]
+prng = ["rand_core"]

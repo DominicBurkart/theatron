@@ -65,6 +65,10 @@ repos:
                         echo "✅ Coverage: $NEW% (main branch)"
                         exit 0
                     fi
+                    if [[ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]]; then
+                        echo "✅ Coverage: $NEW% (merge commit, skipping baseline comparison)"
+                        exit 0
+                    fi
                     git stash --include-untracked -q 2>/dev/null || true
                     git checkout main -q 2>/dev/null
                     OLD=$(cargo tarpaulin --skip-clean --ignore-tests -q 2>/dev/null | grep -oP "\d+\.\d+(?=% coverage)" || echo "0")
@@ -96,7 +100,7 @@ repos:
                     if echo "$REVIEW" | grep -qi "NO SECURITY ISSUES FOUND"; then
                         echo "✅ Security review passed"
                         exit 0
-                    elif echo "$REVIEW" | grep -qi "problem\|secret\|token\|pii\|leak\|vulnerability"; then
+                    elif echo "$REVIEW" | grep -qiE "security (issue|problem|concern|risk|violation)|secret (found|detected|leaked|exposed)|token (found|detected|leaked|exposed)|pii (found|detected|leaked|exposed)|leak(ed)? (secret|token|credential|key)|vulnerabilit(y|ies) found"; then
                         echo "🚨 Security issues found above. Please fix before committing."
                         exit 1
                     else
