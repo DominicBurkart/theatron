@@ -79,8 +79,6 @@ Invalid transitions become compile errors. For adapter integrations, correctness
 
 #### LoRaWAN Class A state flow (validation target reference)
 
-The following illustrates the validation target's state machine for reference:
-
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
@@ -240,7 +238,7 @@ The server implements `Protocol` and participates in the simulation as a node wi
 
 ### Channel / Medium
 
-A shared simulation object that models the physical wireless channel: propagation delay, collision detection, RSSI and SNR derivation, SF orthogonality approximation, and time-on-air gating. The channel model is parameterized; in the validation case it is configured for LoRa using `lora-modulation`. The channel carries `Vec<u8>` payloads alongside `TxMetadata` (SF, bandwidth, frequency, TX power). Protocol adapters parse the raw bytes via their respective crates; the channel remains format-agnostic.
+A shared simulation object that models the physical wireless channel: propagation delay, collision detection, RSSI and SNR derivation, SF orthogonality approximation, and time-on-air gating. The channel model is parameterized; in the validation case it is configured for LoRa using `lora-modulation`. The channel carries `Vec<u8>` payloads alongside `Transmission` metadata (SF, bandwidth, frequency, TX power). Protocol adapters parse the raw bytes via their respective crates; the channel remains format-agnostic.
 
 All communication flows through the channel — protocols and interference sources do not interact directly.
 
@@ -326,7 +324,7 @@ To ground simulations in real-world conditions, theatron may include tooling for
 
 ### Frame representation
 
-**Concrete: the channel carries `Vec<u8>` + `TxMetadata`.** Protocol adapters use their respective crates (e.g. `lorawan` for LoRaWAN) to parse and construct frames. The channel stays format-agnostic; type safety lives at the protocol layer, not the channel layer.
+**Concrete: the channel carries `Vec<u8>` + `Transmission` metadata.** Protocol adapters use their respective crates (e.g. `lorawan` for LoRaWAN) to parse and construct frames. The channel stays format-agnostic; type safety lives at the protocol layer, not the channel layer.
 
 ### Interference source visibility
 
