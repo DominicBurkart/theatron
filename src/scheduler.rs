@@ -228,33 +228,25 @@ impl Scheduler {
         for (sender, collided, captured, frame) in completed {
             if collided {
                 self.metrics.record_collision();
-            } else {
-                if captured {
-                    self.metrics.record_capture();
+                continue;
+            }
+            if captured {
+                self.metrics.record_capture();
+            }
+            // Indexed loop so each `&mut self.nodes[i]` borrow ends with the
+            // call expression, freeing `self` to call `schedule` and
+            // `handle_poll_transmit` in the same iteration.
+            for i in 0..self.nodes.len() {
+                let node_id = self.nodes[i].node_id();
+                if node_id == sender {
+                    continue;
                 }
-                // First pass: call on_receive on every non-sender node and
-                // collect (index, optional_wake) so we can call self.schedule
-                // and self.handle_poll_transmit in a second pass without
-                // holding a borrow on self.nodes.
-                let mut receiver_results: Vec<(usize, Option<SimTime>)> = Vec::new();
-                for i in 0..self.nodes.len() {
-                    if self.nodes[i].node_id() != sender {
-                        let node_id = self.nodes[i].node_id();
-                        let next = self.nodes[i].on_receive(frame.clone(), time);
-                        self.metrics.record_rx(node_id);
-                        receiver_results.push((i, next));
-                    }
+                let next = self.nodes[i].on_receive(frame.clone(), time);
+                self.metrics.record_rx(node_id);
+                if let Some(t) = next {
+                    self.schedule(t, EventKind::Wake { node_id });
                 }
-                // Second pass: schedule any requested wakes and poll for
-                // follow-on transmissions using only indices and wake times
-                // already captured — no second Vec needed.
-                for (i, wake) in receiver_results {
-                    if let Some(t) = wake {
-                        let node_id = self.nodes[i].node_id();
-                        self.schedule(t, EventKind::Wake { node_id });
-                    }
-                    self.handle_poll_transmit(i, time);
-                }
+                self.handle_poll_transmit(i, time);
             }
         }
     }
