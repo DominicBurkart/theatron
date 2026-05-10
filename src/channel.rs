@@ -1,7 +1,30 @@
 use crate::time::SimTime;
 use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 
-pub type CompletedTx = (NodeId, bool, bool, RxMetadata);
+/// Outcome of a transmission resolved by the channel.
+///
+/// Returned by [`Channel::drain_completed`] for each completed transmission.
+/// Named fields make the meaning of `collided` / `captured` explicit at every
+/// call site — replacing the previous opaque `(NodeId, bool, bool, RxMetadata)`
+/// tuple where adjacent booleans were easy to confuse.
+///
+/// `collided` and `captured` are mutually exclusive for any given completed
+/// transmission: a frame either survives (possibly via the capture effect) or
+/// is lost to a collision.
+#[derive(Debug, Clone)]
+pub struct CompletedTx {
+    /// Sender of the transmission.
+    pub sender: NodeId,
+    /// `true` if the transmission was destroyed by a collision and should not
+    /// be delivered to receivers.
+    pub collided: bool,
+    /// `true` if the transmission survived an overlap with another transmission
+    /// via the radio capture effect (stronger signal wins).
+    pub captured: bool,
+    /// Receiver-side metadata derived from the transmission and channel
+    /// parameters (RSSI, SNR, SF, frequency, end time, payload).
+    pub metadata: RxMetadata,
+}
 
 /// Default LoRa path loss in dB (free-space + typical indoor attenuation baseline).
 pub const LORA_PATH_LOSS_DB: f32 = 100.0;
@@ -272,10 +295,10 @@ impl Channel {
         events
     }
 
-    /// Drain and return all completed transmissions as `CompletedTx` tuples.
+    /// Drain and return all completed transmissions as [`CompletedTx`] records.
     ///
-    /// Each entry is `(sender, collided, captured, RxMetadata)`. RSSI and SNR
-    /// are computed from the transmission power and channel parameters.
+    /// RSSI and SNR are computed from the transmission power and channel
+    /// parameters and exposed via [`CompletedTx::metadata`].
     ///
     /// # Examples
     ///
@@ -297,8 +320,8 @@ impl Channel {
     /// ch.resolve_at(50_000);
     /// let completed = ch.drain_completed();
     /// assert_eq!(completed.len(), 1);
-    /// assert_eq!(completed[0].0, NodeId(1));
-    /// assert!(!completed[0].1);
+    /// assert_eq!(completed[0].sender, NodeId(1));
+    /// assert!(!completed[0].collided);
     /// ```
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
         let path_loss_db = self.config.path_loss_db;
@@ -316,7 +339,12 @@ impl Channel {
                     frequency: tx.frequency,
                     time: tx.end,
                 };
-                (tx.sender, tx.collided, tx.captured, metadata)
+                CompletedTx {
+                    sender: tx.sender,
+                    collided: tx.collided,
+                    captured: tx.captured,
+                    metadata,
+                }
             })
             .collect()
     }
@@ -371,8 +399,8 @@ mod tests {
         ch.resolve_at(50_000);
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 1);
-        assert!(!completed[0].1, "single TX should not collide");
-        assert_eq!(completed[0].3.payload, vec![0x01, 0x02]);
+        assert!(!completed[0].collided, "single TX should not collide");
+        assert_eq!(completed[0].metadata.payload, vec![0x01, 0x02]);
     }
 
     #[test]
@@ -384,7 +412,7 @@ mod tests {
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        assert!(completed.iter().all(|(_, collided, _, _)| *collided));
+        assert!(completed.iter().all(|c| c.collided));
     }
 
     #[test]
@@ -397,7 +425,7 @@ mod tests {
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 2);
-        assert!(completed.iter().all(|(_, collided, _, _)| !collided));
+        assert!(completed.iter().all(|c| !c.collided));
     }
 
     #[test]
@@ -410,7 +438,7 @@ mod tests {
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 2);
-        assert!(completed.iter().all(|(_, collided, _, _)| !collided));
+        assert!(completed.iter().all(|c| !c.collided));
     }
 
     #[test]
@@ -425,7 +453,7 @@ mod tests {
         ch.resolve_at(110_000);
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 1);
-        assert!(!completed[0].1);
+        assert!(!completed[0].collided);
     }
 
     #[test]
@@ -439,7 +467,7 @@ mod tests {
         ch.begin_transmission(NodeId(2), &tx2, 50_000);
         ch.resolve_at(100_000);
         let completed = ch.drain_completed();
-        assert!(completed.iter().all(|(_, collided, _, _)| !collided));
+        assert!(completed.iter().all(|c| !c.collided));
     }
 
     #[test]
@@ -452,7 +480,7 @@ mod tests {
         ch.resolve_at(70_000);
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 3);
-        assert!(completed.iter().all(|(_, collided, _, _)| *collided));
+        assert!(completed.iter().all(|c| c.collided));
     }
 
     #[test]
@@ -464,12 +492,9 @@ mod tests {
         ch.begin_transmission(NodeId(2), &weak, 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        let strong_entry = completed
-            .iter()
-            .find(|(id, _, _, _)| *id == NodeId(1))
-            .unwrap();
-        assert!(!strong_entry.1, "strong should not be collided");
-        assert!(strong_entry.2, "strong should be captured");
+        let strong_entry = completed.iter().find(|c| c.sender == NodeId(1)).unwrap();
+        assert!(!strong_entry.collided, "strong should not be collided");
+        assert!(strong_entry.captured, "strong should be captured");
     }
 
     #[test]
@@ -481,11 +506,8 @@ mod tests {
         ch.begin_transmission(NodeId(2), &weak, 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        let weak_entry = completed
-            .iter()
-            .find(|(id, _, _, _)| *id == NodeId(2))
-            .unwrap();
-        assert!(weak_entry.1, "weak should be collided");
+        let weak_entry = completed.iter().find(|c| c.sender == NodeId(2)).unwrap();
+        assert!(weak_entry.collided, "weak should be collided");
     }
 
     #[test]
@@ -498,7 +520,7 @@ mod tests {
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
         assert!(
-            completed.iter().all(|(_, collided, _, _)| *collided),
+            completed.iter().all(|c| c.collided),
             "delta=5 < threshold=6 -> both collide"
         );
     }
@@ -512,7 +534,7 @@ mod tests {
         ch.begin_transmission(NodeId(2), &tx2, 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        let non_collided: Vec<_> = completed.iter().filter(|(_, c, _, _)| !c).collect();
+        let non_collided: Vec<_> = completed.iter().filter(|c| !c.collided).collect();
         assert_eq!(
             non_collided.len(),
             1,
@@ -531,17 +553,14 @@ mod tests {
         ch.begin_transmission(NodeId(3), &weak, 10_000);
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
-        let non_collided: Vec<_> = completed.iter().filter(|(_, c, _, _)| !c).collect();
+        let non_collided: Vec<_> = completed.iter().filter(|c| !c.collided).collect();
         assert_eq!(
             non_collided.len(),
             1,
             "only strongest survives three-way collision"
         );
-        let strong_entry = completed
-            .iter()
-            .find(|(id, _, _, _)| *id == NodeId(1))
-            .unwrap();
-        assert!(strong_entry.2, "strongest should be marked captured");
+        let strong_entry = completed.iter().find(|c| c.sender == NodeId(1)).unwrap();
+        assert!(strong_entry.captured, "strongest should be marked captured");
     }
 
     #[test]
@@ -557,7 +576,7 @@ mod tests {
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
         assert!(
-            completed.iter().all(|(_, collided, _, _)| *collided),
+            completed.iter().all(|c| c.collided),
             "delta=6 < threshold=10 -> both collide"
         );
     }
@@ -570,7 +589,7 @@ mod tests {
         ch.resolve_at(50_000);
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 1);
-        let meta = &completed[0].3;
+        let meta = &completed[0].metadata;
         assert!((meta.rssi - (14.0_f32 - 100.0)).abs() < 0.001);
         assert!((meta.snr - (-86.0_f32 - (-117.0))).abs() < 0.001);
     }
@@ -626,10 +645,10 @@ mod tests {
         assert_eq!(lora_rx.len(), 1);
         assert_eq!(short_rx.len(), 1);
         assert!(
-            short_rx[0].3.rssi > lora_rx[0].3.rssi,
+            short_rx[0].metadata.rssi > lora_rx[0].metadata.rssi,
             "lower path loss must yield higher RSSI: short_range={} lora={}",
-            short_rx[0].3.rssi,
-            lora_rx[0].3.rssi,
+            short_rx[0].metadata.rssi,
+            lora_rx[0].metadata.rssi,
         );
     }
 
@@ -657,10 +676,10 @@ mod tests {
         assert_eq!(lora_rx.len(), 1);
         assert_eq!(quiet_rx.len(), 1);
         assert!(
-            quiet_rx[0].3.snr > lora_rx[0].3.snr,
+            quiet_rx[0].metadata.snr > lora_rx[0].metadata.snr,
             "lower noise floor must yield higher SNR: quiet={} lora={}",
-            quiet_rx[0].3.snr,
-            lora_rx[0].3.snr,
+            quiet_rx[0].metadata.snr,
+            lora_rx[0].metadata.snr,
         );
     }
 
@@ -690,18 +709,12 @@ mod tests {
         let strict_rx = ch_strict.drain_completed();
 
         assert_eq!(
-            lora_rx
-                .iter()
-                .filter(|(_, collided, _, _)| !collided)
-                .count(),
+            lora_rx.iter().filter(|c| !c.collided).count(),
             1,
             "LoRa threshold=6: strong signal must survive"
         );
         assert_eq!(
-            strict_rx
-                .iter()
-                .filter(|(_, collided, _, _)| !collided)
-                .count(),
+            strict_rx.iter().filter(|c| !c.collided).count(),
             0,
             "strict threshold=10: both collide at delta=6"
         );
@@ -720,7 +733,7 @@ mod tests {
                 ch.begin_transmission(NodeId(1), &tx, t);
                 ch.resolve_at(t + duration);
                 let completed = ch.drain_completed();
-                if completed.iter().any(|(_, collided, _, _)| *collided) {
+                if completed.iter().any(|c| c.collided) {
                     all_clean = false;
                     break;
                 }
@@ -740,7 +753,7 @@ mod tests {
             ch.resolve_at(duration);
             let completed = ch.drain_completed();
             prop_assert_eq!(completed.len(), n);
-            prop_assert!(completed.iter().all(|(_, collided, _, _)| *collided));
+            prop_assert!(completed.iter().all(|c| c.collided));
         }
 
         #[test]
@@ -754,7 +767,7 @@ mod tests {
             ch.begin_transmission(NodeId(2), &tx_b, 0);
             ch.resolve_at(duration);
             let completed = ch.drain_completed();
-            prop_assert!(completed.iter().all(|(_, collided, _, _)| !collided));
+            prop_assert!(completed.iter().all(|c| !c.collided));
         }
     }
 
@@ -800,16 +813,16 @@ mod tests {
         let completed = ch.drain_completed();
         assert_eq!(completed.len(), 2);
 
-        for (sender, collided, captured, _meta) in &completed {
+        for c in &completed {
             assert!(
-                *collided,
+                c.collided,
                 "sender {:?} should be collided for equal-power overlap",
-                sender
+                c.sender
             );
             assert!(
-                !*captured,
+                !c.captured,
                 "sender {:?} should not be captured for equal-power overlap",
-                sender
+                c.sender
             );
         }
 
@@ -823,7 +836,7 @@ mod tests {
         let delivered: Vec<_> = ch2
             .drain_completed()
             .into_iter()
-            .filter(|(_, collided, _, _)| !*collided)
+            .filter(|c| !c.collided)
             .collect();
         assert_eq!(
             delivered.len(),

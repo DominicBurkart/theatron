@@ -188,7 +188,7 @@ fn channel_resolve_partial_only_finished() {
     assert_eq!(events.len(), 1);
     let completed = ch.drain_completed();
     assert_eq!(completed.len(), 1);
-    assert_eq!(completed[0].0, NodeId(1));
+    assert_eq!(completed[0].sender, NodeId(1));
 }
 
 #[test]
@@ -224,13 +224,13 @@ fn channel_resolve_filters_by_time() {
     // drain_completed at this point only includes TX1 (only it was resolved)
     let completed_partial = ch.drain_completed();
     assert_eq!(completed_partial.len(), 1);
-    assert_eq!(completed_partial[0].0, NodeId(1));
+    assert_eq!(completed_partial[0].sender, NodeId(1));
 
     // Resolve TX2 and confirm it drains correctly
     ch.resolve_at(200_000);
     let completed_rest = ch.drain_completed();
     assert_eq!(completed_rest.len(), 1);
-    assert_eq!(completed_rest[0].0, NodeId(2));
+    assert_eq!(completed_rest[0].sender, NodeId(2));
 }
 
 #[test]
@@ -247,17 +247,14 @@ fn channel_late_strong_captures_earlier_weak() {
     ch.resolve_at(80_000);
     let completed = ch.drain_completed();
 
-    let strong_entry = completed
-        .iter()
-        .find(|(id, _, _, _)| *id == NodeId(2))
-        .unwrap();
-    let weak_entry = completed
-        .iter()
-        .find(|(id, _, _, _)| *id == NodeId(1))
-        .unwrap();
-    assert!(!strong_entry.1, "strong signal should not be collided");
-    assert!(strong_entry.2, "strong signal should be captured");
-    assert!(weak_entry.1, "weak signal should be collided");
+    let strong_entry = completed.iter().find(|c| c.sender == NodeId(2)).unwrap();
+    let weak_entry = completed.iter().find(|c| c.sender == NodeId(1)).unwrap();
+    assert!(
+        !strong_entry.collided,
+        "strong signal should not be collided"
+    );
+    assert!(strong_entry.captured, "strong signal should be captured");
+    assert!(weak_entry.collided, "weak signal should be collided");
 }
 
 #[test]
@@ -311,7 +308,7 @@ fn channel_multiple_resolve_cycles() {
     ch.resolve_at(130_000);
     let completed = ch.drain_completed();
     assert_eq!(completed.len(), 1);
-    assert_eq!(completed[0].0, NodeId(2));
+    assert_eq!(completed[0].sender, NodeId(2));
 }
 
 // ===========================================================================
@@ -331,11 +328,11 @@ proptest! {
         ch.resolve_at(60_000);
         let completed = ch.drain_completed();
         // Strong signal (NodeId(1)) should survive; weak signal (NodeId(2)) should not.
-        let survivors: Vec<_> = completed.iter().filter(|(_, collided, _, _)| !collided).collect();
+        let survivors: Vec<_> = completed.iter().filter(|c| !c.collided).collect();
         prop_assert_eq!(survivors.len(), 1);
         // Verify the survivor is the strong sender by both NodeId and RSSI.
-        prop_assert_eq!(survivors[0].0, NodeId(1));
-        prop_assert_eq!(survivors[0].3.rssi, ch.compute_rssi(strong_power));
+        prop_assert_eq!(survivors[0].sender, NodeId(1));
+        prop_assert_eq!(survivors[0].metadata.rssi, ch.compute_rssi(strong_power));
     }
 
     #[test]
