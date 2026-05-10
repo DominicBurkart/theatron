@@ -169,3 +169,55 @@ impl NodeHandle for LoRaWanAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Per-node seed derivation must be deterministic: the same
+    /// `(master_seed, node_id)` pair must always produce the same output.
+    /// This is the reproducibility guarantee called out in
+    /// ARCHITECTURE.md "Randomness".
+    ///
+    /// The concrete expected value pins the formula output:
+    ///   0xDEAD_BEEF ^ (1u64.wrapping_mul(0x9e3779b97f4a7c15))
+    ///   = 0x0000_0000_DEAD_BEEF ^ 0x9e37_79b9_7f4a_7c15
+    ///   = 0x9e37_79b9_a1e7_c2fa
+    #[test]
+    fn derive_seed_is_deterministic() {
+        assert_eq!(derive_seed(0xDEAD_BEEF, 1), 0x9e3779b9a1e7c2fa_u64);
+        assert_eq!(derive_seed(0, 0), 0);
+    }
+
+    /// Distinct node ids under the same master seed must produce distinct
+    /// per-node seeds — otherwise two nodes would share a PRNG stream.
+    #[test]
+    fn derive_seed_distinguishes_node_ids() {
+        let master = 0xDEAD_BEEF_1234_5678u64;
+        let s1 = derive_seed(master, 1);
+        let s2 = derive_seed(master, 2);
+        let s3 = derive_seed(master, 3);
+        assert_ne!(s1, s2);
+        assert_ne!(s2, s3);
+        assert_ne!(s1, s3);
+    }
+
+    /// Distinct master seeds must produce distinct per-node seeds for the
+    /// same node id — otherwise changing the simulation seed would not
+    /// change a given node's stream.
+    #[test]
+    fn derive_seed_distinguishes_master_seeds() {
+        assert_ne!(derive_seed(1, 7), derive_seed(2, 7));
+    }
+
+    /// Pin the boundary: `node_id == 0` makes the multiplicative term zero,
+    /// so `derive_seed` returns the master seed verbatim. This is a known
+    /// property — callers that need node 0 to have a distinct stream must
+    /// offset node ids by 1, as the `lorawan_file_transfer` example does
+    /// (devices use `node_id = 1`, server uses `node_id = 100`).
+    #[test]
+    fn derive_seed_node_zero_returns_master() {
+        assert_eq!(derive_seed(0xABCD, 0), 0xABCD);
+        assert_eq!(derive_seed(0, 0), 0);
+    }
+}
