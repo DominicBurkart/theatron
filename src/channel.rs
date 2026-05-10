@@ -139,24 +139,6 @@ impl Channel {
         }
     }
 
-    /// Create a new channel overriding only the co-channel rejection threshold.
-    ///
-    /// All other parameters default to LoRa values. Prefer
-    /// [`Channel::with_config()`] when you want to control multiple parameters.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use theatron::channel::Channel;
-    /// let ch = Channel::with_co_channel_rejection(10.0);
-    /// ```
-    pub fn with_co_channel_rejection(db: f32) -> Self {
-        Self::with_config(ChannelConfig {
-            co_channel_rejection_db: db,
-            ..ChannelConfig::lora_defaults()
-        })
-    }
-
     /// Return a reference to the channel's physical-layer configuration.
     ///
     /// # Examples
@@ -564,7 +546,10 @@ mod tests {
 
     #[test]
     fn configurable_threshold() {
-        let mut ch = Channel::with_co_channel_rejection(10.0);
+        let mut ch = Channel::with_config(ChannelConfig {
+            co_channel_rejection_db: 10.0,
+            ..ChannelConfig::lora_defaults()
+        });
         let tx1 = make_tx_power(7, 868_100_000, 50_000, 20);
         let tx2 = make_tx_power(7, 868_100_000, 50_000, 14);
         ch.begin_transmission(NodeId(1), &tx1, 0);
