@@ -216,12 +216,12 @@ impl Scheduler {
 
     fn deliver_completed_to_nodes(&mut self, time: SimTime) {
         let completed: Vec<CompletedTx> = self.channel.drain_completed();
-        for (sender, collided, captured, frame) in completed {
-            if collided {
+        for tx in completed {
+            if tx.collided {
                 self.metrics.record_collision();
                 continue;
             }
-            if captured {
+            if tx.captured {
                 self.metrics.record_capture();
             }
             // Indexed loop so each `&mut self.nodes[i]` borrow ends with the
@@ -229,10 +229,10 @@ impl Scheduler {
             // `handle_poll_transmit` in the same iteration.
             for i in 0..self.nodes.len() {
                 let node_id = self.nodes[i].node_id();
-                if node_id == sender {
+                if node_id == tx.sender {
                     continue;
                 }
-                let next = self.nodes[i].on_receive(frame.clone(), time);
+                let next = self.nodes[i].on_receive(tx.metadata.clone(), time);
                 self.metrics.record_rx(node_id);
                 if let Some(t) = next {
                     self.schedule(t, EventKind::Wake { node_id });
