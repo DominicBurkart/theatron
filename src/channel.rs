@@ -222,11 +222,18 @@ impl Channel {
             {
                 let delta = tx.tx_power_dbm as f32 - active.tx_power_dbm as f32;
                 if delta >= self.config.co_channel_rejection_db {
+                    // New TX is stronger: active loses, new TX wins via capture.
+                    // Reset captured in case active was previously winning.
                     active.collided = true;
+                    active.captured = false;
                     new_captured = true;
                 } else if delta <= -self.config.co_channel_rejection_db {
+                    // Active TX is stronger: new TX loses.
+                    // Only credit capture to active if it hasn't already lost.
                     new_collided = true;
-                    active.captured = true;
+                    if !active.collided {
+                        active.captured = true;
+                    }
                 } else {
                     active.collided = true;
                     active.captured = false;
@@ -561,6 +568,11 @@ mod tests {
         );
         let strong_entry = completed.iter().find(|c| c.sender == NodeId(1)).unwrap();
         assert!(strong_entry.captured, "strongest should be marked captured");
+        // Verify the invariant: collided and captured are mutually exclusive.
+        assert!(
+            completed.iter().all(|c| !(c.collided && c.captured)),
+            "collided and captured must never both be true"
+        );
     }
 
     #[test]
@@ -843,5 +855,27 @@ mod tests {
             0,
             "equal-power collisions should not be delivered"
         );
+    }
+
+    #[test]
+    fn collided_and_captured_never_both_true() {
+        // Three-way with descending power: only the strongest (first) survives.
+        // Without the fix, medium TX would end up with collided=true AND captured=true.
+        let mut ch = Channel::new();
+        let strong = make_tx_power(7, 868_100_000, 50_000, 20);
+        let medium = make_tx_power(7, 868_100_000, 50_000, 14);
+        let weak = make_tx_power(7, 868_100_000, 50_000, 8);
+        ch.begin_transmission(NodeId(1), &strong, 0);
+        ch.begin_transmission(NodeId(2), &medium, 5_000);
+        ch.begin_transmission(NodeId(3), &weak, 10_000);
+        ch.resolve_at(60_000);
+        let completed = ch.drain_completed();
+        for c in &completed {
+            assert!(
+                !(c.collided && c.captured),
+                "sender {:?}: collided={} captured={} — invariant violated",
+                c.sender, c.collided, c.captured
+            );
+        }
     }
 }
