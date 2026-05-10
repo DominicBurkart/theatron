@@ -57,7 +57,11 @@ pub enum EventKind {
     InterferencePoll { interferer_idx: usize },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+// `#[derive(PartialOrd)]` generates `partial_cmp` as `Some(self.cmp(other))` when
+// a manual `Ord` impl exists, which is exactly what BinaryHeap requires: PartialOrd
+// must be consistent with Ord. Using derive instead of a hand-written impl
+// guarantees that invariant is maintained automatically.
+#[derive(Debug, Clone, Eq, PartialEq, PartialOrd)]
 struct ScheduledEvent {
     time: SimTime,
     seq: u64,
@@ -67,12 +71,6 @@ struct ScheduledEvent {
 impl Ord for ScheduledEvent {
     fn cmp(&self, other: &Self) -> Ordering {
         other.time.cmp(&self.time).then(other.seq.cmp(&self.seq))
-    }
-}
-
-impl PartialOrd for ScheduledEvent {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }
 
