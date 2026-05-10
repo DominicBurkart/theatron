@@ -7,10 +7,6 @@
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](https://github.com/DominicBurkart/theatron)
 [![last commit](https://img.shields.io/github/last-commit/dominicburkart/theatron)](https://github.com/DominicBurkart/theatron)
 
-Simulation framework for evaluating and comparing wireless protocol implementations under network-level effects.
+Simulation framework for evaluating and comparing wireless protocol implementations (e.g. LoRaWAN) under network-level effects: packet loss, interference, and variable signal propagation.
 
-## Overview
-
-Theatron provides the scaffolding to simulate wireless network environments, enabling developers to test and benchmark protocol implementations (such as LoRaWAN) against realistic network conditions including packet loss, interference, and variable signal propagation.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of the system design.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design.

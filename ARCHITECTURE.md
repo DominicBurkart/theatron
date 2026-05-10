@@ -1,12 +1,12 @@
-# theatron — Architecture Proposal
+# theatron — architecture proposal
 
-## Project Goal
+## Project goal
 
-theatron is a simulation and evaluation framework that models network-level effects (propagation, interference, contention, adversarial scenarios) to compare protocol implementations under controlled, reproducible conditions. Protocol implementations are external. Any `Protocol` trait implementor can be evaluated — different protocols, different implementations of the same protocol, same implementation with different parameters. LoRaWAN via lora-rs is the first validation target. Outputs help clients with stack selection and inform protocol development outside theatron.
+theatron is a simulation and evaluation framework that models network-level effects (propagation, interference, contention, adversarial scenarios) to compare protocol implementations under controlled, reproducible conditions. Any `Protocol` trait implementor can be evaluated — different protocols, different implementations of the same protocol, or the same implementation with different parameters. Protocol implementations live outside theatron (see [Protocol logic lives outside theatron](#protocol-logic-lives-outside-theatron)). LoRaWAN via lora-rs is the first validation target. Outputs inform stack selection and protocol development.
 
-## Evaluation Dimensions
+## Evaluation dimensions
 
-theatron targets multiple dimensions of protocol evaluation:
+theatron targets:
 
 - **Performance under interference**: throughput vs spreading factor, saturated band scenarios, co-channel contention
 - **Parameter optimization**: SF, bandwidth, coding rate, and TX power tradeoffs
@@ -15,11 +15,11 @@ theatron targets multiple dimensions of protocol evaluation:
 - **Energy efficiency**: time-on-air as a proxy for battery impact
 - **Security and resilience**: adversarial scenarios including replay attacks, jamming, band flooding, and eavesdropping; adversaries may be external or internal (compromised nodes)
 
-## Core Abstractions
+## Core abstractions
 
 ### `Protocol` trait
 
-The central abstraction. Each MAC protocol implements this trait, which defines how a node processes received frames, generates transmissions, and manages state.
+The central abstraction. Each MAC protocol implements this trait, defining how a node processes received frames, generates transmissions, and manages state.
 
 ```rust
 trait Protocol {
@@ -51,19 +51,18 @@ struct Transmission {
 }
 ```
 
-`init`, `on_receive`, and `update` each return `Option<SimTime>` — the next simulation time at which the scheduler must call `update` on this node. Returning `None` means the node has no pending timer. This allows the scheduler to use event-driven dispatch (a priority queue keyed on SimTime) rather than polling every node on every tick.
+`init`, `on_receive`, and `update` each return `Option<SimTime>` — the next simulation time at which the scheduler must call `update` on this node. `None` means no pending timer. This enables event-driven dispatch (a priority queue keyed on `SimTime`) instead of per-tick polling.
 
 `update` drives timer-based state transitions (e.g. RX1/RX2 window opening in LoRaWAN Class A) without requiring an incoming frame.
 
-#### Two ways external protocol implementations connect to theatron
+#### Integration patterns
 
-**Adapter integration**: a thin adapter wraps an external crate (e.g. `lorawan-device`). Protocol logic stays entirely in the external crate; the adapter implements the `Protocol` trait to bridge it into the simulation.
+- **Adapter integration**: a thin adapter wraps an external crate (e.g. `lorawan-device`); protocol logic stays in the external crate and the adapter implements `Protocol` to bridge it.
+- **Direct trait implementation**: a protocol implemented externally against `Protocol` directly, for protocols without an existing crate.
 
-**Direct trait implementation**: a protocol implemented externally against the `Protocol` trait directly, for protocols without an existing crate.
+#### Recommended pattern: typestate state-machine validation
 
-#### Recommended pattern for external implementors: static state machine validation
-
-For protocols implemented directly against the `Protocol` trait, the typestate pattern can encode valid state transitions at the type level:
+For direct `Protocol` implementations, the typestate pattern encodes valid state transitions at the type level:
 
 ```rust
 struct Idle;
@@ -75,11 +74,9 @@ impl Protocol for MyProtocol<Transmitting> { ... }
 impl Protocol for MyProtocol<RxWindow1> { ... }
 ```
 
-Invalid transitions become compile errors. For adapter integrations, correctness comes from the upstream crate's own state machine.
+Invalid transitions become compile errors. For adapter integrations, correctness comes from the upstream crate's state machine.
 
 #### LoRaWAN Class A state flow (validation target reference)
-
-The following illustrates the validation target's state machine for reference:
 
 ```mermaid
 stateDiagram-v2
@@ -93,7 +90,7 @@ stateDiagram-v2
 
 ### `TrafficModel` trait
 
-LoRaWAN and similar protocols do not transmit autonomously — the application layer decides when to send data. A `TrafficModel` provides uplink payloads to a node when it is ready to transmit.
+LoRaWAN and similar protocols do not transmit autonomously — the application layer decides when to send. A `TrafficModel` supplies uplink payloads when a node is ready to transmit.
 
 ```rust
 trait TrafficModel {
@@ -101,25 +98,25 @@ trait TrafficModel {
 }
 ```
 
-The scheduler calls `poll_transmit` on the protocol; the protocol (or its adapter) calls `next_payload` on the traffic model to get application data. Built-in models: periodic, Poisson arrival, bursty. Custom models can be provided for application-specific load patterns.
+The scheduler calls `poll_transmit` on the protocol; the protocol (or its adapter) calls `next_payload` to get application data. Built-in models: periodic, Poisson arrival, bursty. Custom models support application-specific load patterns.
 
-### Validation Target: LoRaWAN via lora-rs
+### Validation target: LoRaWAN via lora-rs
 
-LoRaWAN via lora-rs is the first real-world protocol used to prove the simulation engine works with a real stack. The validation example is external to theatron core and comprises three components:
+LoRaWAN via lora-rs is the first real-world protocol used to validate the simulation engine. The example lives outside theatron core and has three components:
 
-- **LoRaWAN device adapter**: wraps `lorawan-device::nb_device` to implement the `Protocol` trait
-- **Simulated network server**: responds to joins and schedules downlinks (see below)
-- **SimulatedRadio**: bridges the adapter to theatron's channel
+- **LoRaWAN device adapter**: wraps `lorawan-device::nb_device` to implement `Protocol`.
+- **Simulated network server**: responds to joins and schedules downlinks (see below).
+- **`SimulatedRadio`**: bridges the adapter to theatron's channel.
 
-The validation example uses:
+Crates used:
 
-- **`lorawan`**: frame parsing and creation, MIC verification, MAC command handling. `RxMetadata.payload` and `Transmission.payload` are raw bytes parsed via `lorawan::parser::PhyPayload`.
-- **`lorawan-device`**: real Class A state machine via `nb_device`. The adapter drives it by implementing `lorawan_device::nb_device::radio::PhyRxTx` on a `SimulatedRadio` struct that bridges to the simulated channel.
-- **`lora-modulation`**: SF, bandwidth, and time-on-air calculations. Used in the channel model and energy-efficiency metrics.
+- **`lorawan`**: frame parsing/creation, MIC verification, MAC command handling. `RxMetadata.payload` and `Transmission.payload` are raw bytes parsed via `lorawan::parser::PhyPayload`.
+- **`lorawan-device`**: real Class A state machine via `nb_device`. The adapter drives it by implementing `lorawan_device::nb_device::radio::PhyRxTx` on `SimulatedRadio`.
+- **`lora-modulation`**: SF, bandwidth, and time-on-air calculations; used in the channel model and energy-efficiency metrics.
 
-#### `nb_device::radio::PhyRxTx` — the actual interface
+#### `nb_device::radio::PhyRxTx` interface
 
-`lorawan-device`'s `nb_device` module exposes an event-driven radio trait, not a polling interface. `SimulatedRadio` implements this trait:
+`lorawan-device`'s `nb_device` module exposes an event-driven radio trait (not polling). `SimulatedRadio` implements it:
 
 ```rust
 pub trait PhyRxTx {
@@ -144,11 +141,12 @@ pub trait PhyRxTx {
 Events: `TxRequest(TxConfig, &[u8])`, `RxRequest(RxConfig)`, `CancelRx`, `Phy(PhyEvent)`.
 Responses: `Idle`, `Txing`, `TxDone(ms)`, `Rxing`, `RxDone(RxQuality)`.
 
-The state machine calls `handle_event(TxRequest(...))` to initiate a transmission; the radio responds `Txing`, then on the next `Phy(...)` event responds `TxDone(timestamp_ms)`. For RX: `handle_event(RxRequest(...))` → `Rxing`, then when a frame arrives → `RxDone(quality)`, and the state machine reads bytes via `get_received_packet()`.
+TX flow: `handle_event(TxRequest(...))` → `Txing`, then a later `Phy(...)` event → `TxDone(timestamp_ms)`.
+RX flow: `handle_event(RxRequest(...))` → `Rxing`; on frame arrival → `RxDone(quality)`, and the state machine reads bytes via `get_received_packet()`.
 
-#### SimulatedRadio sketch
+#### `SimulatedRadio` sketch
 
-`SimulatedRadio` maintains an internal receive buffer and an RX-mode flag. theatron's channel pushes received frames into the buffer when the radio is in RX mode; frames arriving when the radio is not listening are dropped (physically correct behavior).
+`SimulatedRadio` holds a receive buffer and an RX-mode flag. theatron's channel pushes received frames into the buffer when the radio is in RX mode; frames arriving while not listening are dropped (physically correct).
 
 ```rust
 struct SimulatedRadio {
@@ -207,11 +205,11 @@ impl PhyRxTx for SimulatedRadio {
 }
 ```
 
-The `lorawan-device` state machine calls `handle_event` on `SimulatedRadio`; theatron's scheduler delivers simulated radio events (TX completion, RX frame arrival) by calling `device.handle_event(Event::RadioEvent(phy_event))` on the adapter state.
+The `lorawan-device` state machine calls `handle_event` on `SimulatedRadio`; theatron's scheduler delivers simulated radio events (TX completion, RX frame arrival) via `device.handle_event(Event::RadioEvent(phy_event))` on the adapter state.
 
 #### Adapter state ownership
 
-`lorawan-device::nb_device::Device<R, RNG, N>` bundles the radio, RNG, and MAC state into a single struct. The adapter's `Protocol::State` wraps it along with bookkeeping theatron needs:
+`lorawan-device::nb_device::Device<R, RNG, N>` bundles the radio, RNG, and MAC state. The adapter's `Protocol::State` wraps it with theatron bookkeeping:
 
 ```rust
 struct LorawanState {
@@ -222,32 +220,32 @@ struct LorawanState {
 }
 ```
 
-`pending_tx` is populated when the device issues a `TxRequest` through `SimulatedRadio::handle_event`. `pending_timeout_ms` is updated from `nb_device::Response::TimeoutRequest(ms)`; combined with `tx_start_time`, the adapter converts it to a `SimTime` and returns it from `Protocol::on_receive` / `update`. Since `device` is inside `&mut LorawanState`, mutable access flows correctly through all `Protocol` method signatures.
+`pending_tx` is populated when the device issues `TxRequest` through `SimulatedRadio::handle_event`. `pending_timeout_ms` is updated from `nb_device::Response::TimeoutRequest(ms)`; combined with `tx_start_time`, the adapter converts it to `SimTime` and returns it from `Protocol::on_receive` / `update`. Because `device` lives inside `&mut LorawanState`, mutable access flows through all `Protocol` method signatures.
 
 #### Timer contract
 
-`lorawan-device` returns `Response::TimeoutRequest(delay_ms)` when it needs to be woken after a delay (RX1 window, RX2 window, ACK timeout). The adapter converts this to a `SimTime` and returns it from `update` / `on_receive`. The scheduler inserts this wake time into its event queue and calls `update` at exactly that simulated time, which then delivers `Event::TimeoutFired` to the device.
+`lorawan-device` returns `Response::TimeoutRequest(delay_ms)` when it needs to be woken after a delay (RX1/RX2 window, ACK timeout). The adapter converts this to `SimTime` and returns it from `update` / `on_receive`. The scheduler enqueues the wake time and calls `update` at exactly that simulated time, which delivers `Event::TimeoutFired` to the device.
 
 #### Simulated network server
 
-LoRaWAN is not peer-to-peer — a server must generate join-accept frames and schedule downlinks. The lora-rs validation example includes a minimal "perfect server" (zero processing delay) alongside the device adapter:
+LoRaWAN is not peer-to-peer — a server must generate join-accepts and schedule downlinks. The lora-rs example includes a minimal "perfect server" (zero processing delay) alongside the device adapter that:
 
-- Listens on the channel for join requests and uplinks
-- Derives session keys and generates join-accept frames using `lorawan-encoding`
-- Schedules downlink frames into RX1/RX2 windows
-- Manages frame counters and DevAddr assignment
+- Listens on the channel for join requests and uplinks.
+- Derives session keys and generates join-accept frames using `lorawan-encoding`.
+- Schedules downlink frames into RX1/RX2 windows.
+- Manages frame counters and `DevAddr` assignment.
 
-The server implements `Protocol` and participates in the simulation as a node with network-side visibility. It is part of the lora-rs validation example, not theatron core — consistent with the principle that protocol logic lives outside theatron.
+The server implements `Protocol` and participates as a node with network-side visibility. It ships in the lora-rs example, not theatron core (see [Protocol logic lives outside theatron](#protocol-logic-lives-outside-theatron)).
 
-### Channel / Medium
+### Channel / medium
 
-A shared simulation object that models the physical wireless channel: propagation delay, collision detection, RSSI and SNR derivation, SF orthogonality approximation, and time-on-air gating. The channel model is parameterized; in the validation case it is configured for LoRa using `lora-modulation`. The channel carries `Vec<u8>` payloads alongside `Transmission` (SF, bandwidth, frequency, TX power). Protocol adapters parse the raw bytes via their respective crates; the channel remains format-agnostic.
+Shared object modelling the physical wireless channel: propagation delay, collision detection, RSSI/SNR derivation, SF orthogonality approximation, and time-on-air gating. Parameterized; for validation it is configured for LoRa via `lora-modulation`. The channel carries `Vec<u8>` payloads alongside `Transmission` (SF, bandwidth, frequency, TX power). Protocol adapters parse raw bytes via their respective crates; the channel stays format-agnostic.
 
 All communication flows through the channel — protocols and interference sources do not interact directly.
 
-### Interference Models
+### Interference models
 
-Interference sources are first-class simulation participants. They observe the channel subject to the same physical constraints as legitimate nodes and may inject frames or noise. Multiple interference sources can run simultaneously. Each implements an `InterferenceSource` trait.
+Interference sources are first-class participants. They observe the channel under the same physical constraints as legitimate nodes and may inject frames or noise. Multiple sources can run concurrently. Each implements `InterferenceSource`:
 
 ```rust
 trait InterferenceSource {
@@ -256,87 +254,87 @@ trait InterferenceSource {
 }
 ```
 
-Planned interference models:
-- **Saturated band**: high-volume legitimate-looking traffic overwhelming the channel
-- **Periodic interferer**: burst interference on a regular schedule (models co-channel ISM band users)
-- **Co-channel contention**: multiple independent LoRa networks sharing a frequency plan
-- **Adversarial replay**: capture and re-transmit valid frames
-- **Selective jamming**: targeted interference against specific SFs or node addresses
-- **Passive eavesdropper**: traffic analysis without injection
+Planned models:
+- **Saturated band**: high-volume legitimate-looking traffic that overwhelms the channel.
+- **Periodic interferer**: burst interference on a regular schedule (models co-channel ISM users).
+- **Co-channel contention**: multiple independent LoRa networks sharing a frequency plan.
+- **Adversarial replay**: capture and re-transmit valid frames.
+- **Selective jamming**: targeted interference against specific SFs or node addresses.
+- **Passive eavesdropper**: traffic analysis without injection.
 
 ### Metrics collection
 
-A passive observer attached to the simulation that records per-protocol, per-run statistics: throughput (frames/s per SF), PDR, latency distribution, time-on-air, retransmission count, protocol-specific session establishment metrics (e.g. join success rate in LoRaWAN), and protocol-specific counters. Output in a structured format suitable for statistical comparison across runs.
+A passive observer that records per-protocol, per-run statistics: throughput (frames/s per SF), PDR, latency distribution, time-on-air, retransmission count, session-establishment metrics (e.g. LoRaWAN join success rate), and protocol-specific counters. Output is structured for cross-run statistical comparison.
 
 ### Hardware measurement tooling (potential expansion)
 
-To ground simulations in real-world conditions, theatron may include tooling for capturing LoRa hardware connection characteristics — RSSI profiles, SNR distributions, interference patterns, and timing measurements from physical deployments. These measurements would be uploaded as empirical channel model inputs, allowing simulations to reflect actual deployment conditions.
+To ground simulations in real conditions, theatron may add tooling that captures LoRa hardware characteristics (RSSI profiles, SNR distributions, interference patterns, timing) from physical deployments and uploads them as empirical channel-model inputs.
 
-## Phased Roadmap
+## Phased roadmap
 
-### Phase 1 — Core simulation engine (validated with LoRaWAN Class A)
+### Phase 1 — core simulation engine (validated with LoRaWAN Class A)
 
-- Discrete-event time model (`SimTime` as a microsecond-resolution monotonic counter; see [SimTime resolution](#simtime-resolution))
-- Channel model: parameterized propagation, collision detection, RSSI/SNR derivation (configured for LoRa via `lora-modulation`)
-- Simulation scheduler (priority queue on SimTime; event-driven dispatch via `Option<SimTime>` returns from `Protocol` methods)
-- `Protocol` trait, `TrafficModel` trait, and `SimulatedRadio` bridge
-- *Validation*: LoRaWAN Class A adapter wrapping `lorawan-device::nb_device`, plus minimal network server — both as external examples
-- Interference models: saturated band, periodic interferer
-- Metrics: throughput, PDR, time-on-air
-- **Integration test**: SF7–SF12 under clean, saturated, and periodic-interference channel conditions
+- Discrete-event time model (`SimTime` as a microsecond-resolution monotonic counter; see [SimTime resolution](#simtime-resolution)).
+- Channel model: parameterized propagation, collision detection, RSSI/SNR derivation (configured for LoRa via `lora-modulation`).
+- Scheduler: priority queue on `SimTime`, event-driven dispatch via `Option<SimTime>` returns from `Protocol` methods.
+- `Protocol` trait, `TrafficModel` trait, and `SimulatedRadio` bridge.
+- *Validation*: LoRaWAN Class A adapter wrapping `lorawan-device::nb_device` plus a minimal network server (both external examples).
+- Interference: saturated band, periodic interferer.
+- Metrics: throughput, PDR, time-on-air.
+- **Integration test**: SF7–SF12 under clean, saturated, and periodic-interference conditions.
 
-### Phase 2 — Multi-protocol comparison
+### Phase 2 — multi-protocol comparison
 
-- Pure ALOHA as trivial reference implementation for multi-protocol validation
-- Multi-protocol simulation: run N protocol instances in the same channel simultaneously
-- Comparison output: side-by-side metrics across protocol variants and parameterizations
+- Pure ALOHA as a trivial reference implementation.
+- Multi-protocol simulation: N protocol instances in the same channel simultaneously.
+- Side-by-side metrics across protocol variants and parameterizations.
 
-### Phase 3 — Expanded interference and adversarial models
+### Phase 3 — expanded interference and adversarial models
 
-- Adversarial replay, selective jamming, passive eavesdropper
-- Co-channel contention modeling
-- Configurable interference intensity and targeting strategy
+- Adversarial replay, selective jamming, passive eavesdropper.
+- Co-channel contention modeling.
+- Configurable interference intensity and targeting strategy.
 
-### Phase 4 — Metrics, parameter sweeps, reporting
+### Phase 4 — metrics, parameter sweeps, reporting
 
-- Structured metrics output (JSON/CSV)
-- Statistical utilities (mean, CDF, confidence intervals)
-- Parameter sweep runner: iterate over SF, bandwidth, node count, interference intensity
-- CI integration: regression detection on protocol performance
+- Structured metrics output (JSON/CSV).
+- Statistical utilities (mean, CDF, confidence intervals).
+- Parameter-sweep runner over SF, bandwidth, node count, interference intensity.
+- CI integration: regression detection on protocol performance.
 
-### Phase 5 — Framework generalization and extended tooling
+### Phase 5 — framework generalization and extended tooling
 
-- Parameterizable channel models beyond LoRa
-- Hardware measurement tooling: capture real LoRa hardware characteristics (RSSI profiles, interference patterns, timing) for upload as empirical channel model inputs
-- Typestate validation helpers for external protocol implementors
-- Optional report generation and dashboard
+- Parameterizable channel models beyond LoRa.
+- Hardware measurement tooling (see above) feeding empirical channel-model inputs.
+- Typestate validation helpers for external protocol implementors.
+- Optional report generation and dashboard.
 
-## Key Design Decisions (open for discussion)
+## Key design decisions (open for discussion)
 
 ### Sync vs async
 
-**Proposal: sync.** The simulation engine controls time explicitly — there is no benefit to async here, and async adds complexity. Each node's `poll_transmit` is called by the scheduler in deterministic order. `lorawan-device::nb_device` is the correct integration target (not `async_device`) for the same reason. Revisit if we need to model real-time wall-clock behavior.
+**Proposal: sync.** The engine controls time explicitly; async adds complexity for no benefit. Each node's `poll_transmit` runs in deterministic scheduler order. `lorawan-device::nb_device` is the correct integration target (not `async_device`). Revisit only if modelling real-time wall-clock behaviour.
 
 ### Discrete-event vs continuous time
 
-**Proposal: discrete-event.** Wireless symbol timing (e.g. LoRa) is discrete at the physical layer. Discrete-event simulation is simpler to reason about, deterministic, and fast. Continuous time adds little value for MAC-level analysis.
+**Proposal: discrete-event.** Wireless symbol timing (e.g. LoRa) is discrete at the physical layer. Discrete-event simulation is simpler, deterministic, and fast; continuous time adds little for MAC-level analysis.
 
 ### SimTime resolution
 
-**`SimTime` is a microsecond-resolution monotonic `u64` counter.** Microseconds are required for `lora-modulation`'s time-on-air calculations (which return `u64` microseconds) and for precise collision detection at high SFs. `lorawan-device`'s `TimestampMs` (`u32` milliseconds) is a subset; conversion is `timestamp_ms = (sim_time / 1_000) as u32`. Symbol times at SF7/125kHz are ~1ms; time-on-air at SF12/125kHz is ~2.5s — both fit comfortably in microsecond `u64`.
+**`SimTime` is a monotonic `u64` microsecond counter.** Microseconds are required for `lora-modulation`'s time-on-air calculations (which return `u64` microseconds) and for precise collision detection at high SFs. `lorawan-device`'s `TimestampMs` (`u32` ms) is a subset; conversion is `timestamp_ms = (sim_time / 1_000) as u32`. Symbol times at SF7/125kHz are ~1ms; time-on-air at SF12/125kHz is ~2.5s — both fit comfortably in `u64` microseconds.
 
 ### Frame representation
 
-**Concrete: the channel carries `Vec<u8>` + `Transmission`.** Protocol adapters use their respective crates (e.g. `lorawan` for LoRaWAN) to parse and construct frames. The channel stays format-agnostic; type safety lives at the protocol layer, not the channel layer.
+**The channel carries `Vec<u8>` + `Transmission`.** Adapters use their crate of choice (e.g. `lorawan`) to parse and construct frames. Type safety lives at the protocol layer, not the channel.
 
 ### Interference source visibility
 
-**Proposal: interference sources observe the channel at the physical layer** (pre-collision-resolution), matching real-world RF capability. They cannot inspect node-internal state unless explicitly modeled as compromised nodes.
+**Interference sources observe the channel at the physical layer** (pre-collision-resolution), matching real-world RF capability. They cannot inspect node-internal state unless explicitly modeled as compromised nodes.
 
 ### Protocol logic lives outside theatron
 
-**Principle: theatron's value is the simulation engine, channel model, and evaluation infrastructure.** Protocol implementations — whether adapting existing crates or built from scratch — are external. theatron provides the `Protocol` trait contract and the simulated medium; protocol authors provide the state machines. The lora-rs validation example (device adapter, network server, SimulatedRadio) ships alongside theatron as an example, not as part of the core library.
+**theatron provides the simulation engine, channel model, and evaluation infrastructure; protocol implementations are external.** The `Protocol` trait contract and the simulated medium come from theatron; state machines come from protocol authors. The lora-rs example (device adapter, network server, `SimulatedRadio`) ships alongside theatron as an example, not as part of the core library.
 
 ### Randomness
 
-**Proposal: seeded `rand` with explicit `Rng` threading** through all stochastic components. No global RNG. This makes simulations fully reproducible from a seed and enables parallel runs with different seeds. For the LoRaWAN adapter, `lorawan-device`'s `Prng` (Wyrand-based) is initialized per-node from a per-node seed derived from the master simulation seed.
+**Seeded `rand` with explicit `Rng` threading** through all stochastic components; no global RNG. This makes simulations fully reproducible from a seed and enables parallel runs with different seeds. For the LoRaWAN adapter, `lorawan-device`'s Wyrand-based `Prng` is initialized per-node from a per-node seed derived from the master simulation seed.
