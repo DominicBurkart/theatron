@@ -76,6 +76,15 @@ impl PartialOrd for ScheduledEvent {
     }
 }
 
+/// Synthesise a `NodeId` for the interferer at index `idx`.
+///
+/// Interferers occupy the high end of the `NodeId` space (`u32::MAX`
+/// counting down) so that `add_node` can `debug_assert!` against
+/// collisions without needing to consult a separate registry.
+fn synthetic_interferer_id(idx: usize) -> NodeId {
+    NodeId(u32::MAX - idx as u32)
+}
+
 /// The simulation scheduler, which drives all nodes and interferers.
 pub struct Scheduler {
     events: BinaryHeap<ScheduledEvent>,
@@ -162,7 +171,7 @@ impl Scheduler {
     /// ```
     pub fn add_node(&mut self, node: Box<dyn NodeHandle>, initial_wake: Option<SimTime>) {
         debug_assert!(
-            (0..self.interferers.len()).all(|i| node.node_id().0 != u32::MAX - i as u32),
+            (0..self.interferers.len()).all(|i| node.node_id() != synthetic_interferer_id(i)),
             "NodeId({}) collides with interferer ID space",
             node.node_id().0
         );
@@ -175,10 +184,10 @@ impl Scheduler {
 
     pub fn add_interferer(&mut self, interferer: Box<dyn InterferenceSource>, first_poll: SimTime) {
         let idx = self.interferers.len();
-        let synthetic_id = u32::MAX - idx as u32;
+        let synthetic_id = synthetic_interferer_id(idx);
         debug_assert!(
-            self.nodes.iter().all(|n| n.node_id().0 != synthetic_id),
-            "interferer synthetic NodeId({synthetic_id}) collides with a registered node"
+            self.nodes.iter().all(|n| n.node_id() != synthetic_id),
+            "interferer synthetic {synthetic_id:?} collides with a registered node"
         );
         self.interferers.push(interferer);
         self.schedule(
@@ -294,7 +303,7 @@ impl Scheduler {
                     let time = event.time;
                     if let Some(tx) = self.interferers[interferer_idx].poll_inject(time) {
                         let duration = tx.duration_us;
-                        let interferer_node_id = NodeId(u32::MAX - interferer_idx as u32);
+                        let interferer_node_id = synthetic_interferer_id(interferer_idx);
                         let ch_event =
                             self.channel
                                 .begin_transmission(interferer_node_id, &tx, time);

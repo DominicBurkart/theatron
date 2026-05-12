@@ -2,29 +2,21 @@ use theatron::scheduler::NodeHandle;
 use theatron::time::SimTime;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
+/// Stub LoRaWAN network server used by the file-transfer example.
+///
+/// The architecture treats the network server as an external simulation
+/// participant; for this example we only need a node that consumes uplinks
+/// so the scheduler-level RX metrics (`MetricsCollector::node_rx_count`)
+/// reflect end-to-end delivery. Per-fragment payload accumulation was
+/// previously stored on this struct but never read, so the receive path is
+/// now a no-op and the bookkeeping fields are gone.
 pub struct NetworkServer {
     id: NodeId,
-    received_fragments: Vec<Vec<u8>>,
-    total_bytes_received: usize,
 }
 
 impl NetworkServer {
     pub fn new(id: NodeId) -> Self {
-        Self {
-            id,
-            received_fragments: Vec::new(),
-            total_bytes_received: 0,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn received_fragments(&self) -> &[Vec<u8>] {
-        &self.received_fragments
-    }
-
-    #[allow(dead_code)]
-    pub fn total_bytes_received(&self) -> usize {
-        self.total_bytes_received
+        Self { id }
     }
 }
 
@@ -33,9 +25,7 @@ impl NodeHandle for NetworkServer {
         self.id
     }
 
-    fn on_receive(&mut self, frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
-        self.total_bytes_received += frame.payload.len();
-        self.received_fragments.push(frame.payload);
+    fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
         None
     }
 
@@ -64,19 +54,14 @@ mod tests {
     }
 
     #[test]
-    fn new_server_empty() {
-        let server = NetworkServer::new(NodeId(100));
-        assert_eq!(server.received_fragments().len(), 0);
-        assert_eq!(server.total_bytes_received(), 0);
-    }
-
-    #[test]
-    fn on_receive_accumulates() {
+    fn on_receive_returns_none() {
         let mut server = NetworkServer::new(NodeId(100));
-        server.on_receive(make_frame(vec![0x01, 0x02]), 0);
-        server.on_receive(make_frame(vec![0x03]), 1000);
-        assert_eq!(server.received_fragments().len(), 2);
-        assert_eq!(server.total_bytes_received(), 3);
+        assert!(
+            server
+                .on_receive(make_frame(vec![0x01, 0x02]), 0)
+                .is_none()
+        );
+        assert!(server.on_receive(make_frame(vec![0x03]), 1000).is_none());
     }
 
     #[test]
@@ -91,5 +76,11 @@ mod tests {
         let mut server = NetworkServer::new(NodeId(100));
         assert!(server.update(0).is_none());
         assert!(server.update(1_000_000).is_none());
+    }
+
+    #[test]
+    fn node_id_returned_unchanged() {
+        let server = NetworkServer::new(NodeId(100));
+        assert_eq!(server.node_id(), NodeId(100));
     }
 }
