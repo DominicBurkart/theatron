@@ -39,6 +39,7 @@ struct RxMetadata {
     rssi: f32,
     snr: f32,
     sf: u8,
+    frequency: u32,
     time: SimTime,
 }
 
@@ -48,6 +49,8 @@ struct Transmission {
     bandwidth: u32,
     coding_rate: u8,
     frequency: u32,
+    duration_us: u64,
+    tx_power_dbm: i8,
 }
 ```
 
@@ -253,8 +256,11 @@ Interference sources are first-class simulation participants. They observe the c
 trait InterferenceSource {
     fn observe(&mut self, event: &ChannelEvent, time: SimTime);
     fn poll_inject(&mut self, time: SimTime) -> Option<Transmission>;
+    fn next_poll_time(&self, current_time: SimTime) -> Option<SimTime>;
 }
 ```
+
+`next_poll_time` returns the next simulation time at which `poll_inject` should be called, or `None` to stop polling permanently. This keeps the scheduler event-driven (consistent with `Protocol::update`'s `Option<SimTime>` contract) instead of polling every interferer on every tick.
 
 Planned interference models:
 - **Saturated band**: high-volume legitimate-looking traffic overwhelming the channel
