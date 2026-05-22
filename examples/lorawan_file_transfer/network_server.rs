@@ -56,11 +56,7 @@ mod tests {
     #[test]
     fn on_receive_returns_none() {
         let mut server = NetworkServer::new(NodeId(100));
-        assert!(
-            server
-                .on_receive(make_frame(vec![0x01, 0x02]), 0)
-                .is_none()
-        );
+        assert!(server.on_receive(make_frame(vec![0x01, 0x02]), 0).is_none());
         assert!(server.on_receive(make_frame(vec![0x03]), 1000).is_none());
     }
 
