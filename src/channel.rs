@@ -4,13 +4,13 @@ use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 pub type CompletedTx = (NodeId, bool, bool, RxMetadata);
 
 /// Default LoRa path loss in dB (free-space + typical indoor attenuation baseline).
-pub const LORA_PATH_LOSS_DB: f32 = 100.0;
+const LORA_PATH_LOSS_DB: f32 = 100.0;
 
 /// Default LoRa noise floor in dBm (LoRa sensitivity at SF7/125 kHz).
-pub const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
+const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
 
 /// Default co-channel rejection threshold in dB (LoRa capture effect threshold).
-pub const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
+const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
 
 /// Configuration for physical-layer channel parameters.
 ///
@@ -343,6 +343,10 @@ impl Default for Channel {
     }
 }
 
+/// Returns `true` iff intervals [a_start, a_end) and [b_start, b_end) overlap.
+///
+/// Both bounds use strict `<` comparisons, so touching endpoints (e.g.
+/// `a_end == b_start`) do **not** count as overlapping.
 fn overlaps(a_start: SimTime, a_end: SimTime, b_start: SimTime, b_end: SimTime) -> bool {
     a_start < b_end && b_start < a_end
 }
@@ -366,6 +370,59 @@ mod tests {
             frequency,
             duration_us,
             tx_power_dbm,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // overlaps() unit tests
+    // Semantics: [a_start, a_end) and [b_start, b_end) overlap iff
+    //   a_start < b_end && b_start < a_end   (strict on both sides).
+    // Therefore a_end == b_start is NOT an overlap.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn overlaps_adjacent_no_overlap() {
+        // [0, 50_000) is immediately followed by [50_000, 100_000).
+        // Touching at exactly 50_000 must NOT be an overlap.
+        assert!(!overlaps(0, 50_000, 50_000, 100_000));
+    }
+
+    #[test]
+    fn overlaps_one_us_overlap() {
+        // [0, 50_001) extends 1 µs into [50_000, 100_000) → overlap.
+        assert!(overlaps(0, 50_001, 50_000, 100_000));
+    }
+
+    #[test]
+    fn overlaps_identical() {
+        // Identical intervals fully overlap.
+        assert!(overlaps(0, 100_000, 0, 100_000));
+    }
+
+    #[test]
+    fn overlaps_gap() {
+        // [0, 40_000) ends well before [60_000, 100_000) starts → no overlap.
+        assert!(!overlaps(0, 40_000, 60_000, 100_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // overlaps() proptest: symmetry invariant
+    // overlaps(a_s, a_e, b_s, b_e) == overlaps(b_s, b_e, a_s, a_e)
+    // -----------------------------------------------------------------------
+    proptest! {
+        #[test]
+        fn overlaps_is_symmetric(
+            a_start in 0u64..1_000_000u64,
+            a_len   in 1u64..500_000u64,
+            b_start in 0u64..1_000_000u64,
+            b_len   in 1u64..500_000u64,
+        ) {
+            let a_end = a_start + a_len;
+            let b_end = b_start + b_len;
+            prop_assert_eq!(
+                overlaps(a_start, a_end, b_start, b_end),
+                overlaps(b_start, b_end, a_start, a_end),
+            );
         }
     }
 
