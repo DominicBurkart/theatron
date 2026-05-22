@@ -142,8 +142,7 @@ impl InterferenceSource for InjectingObserver {
 /// model energy detection.
 #[test]
 fn interferer_observes_node_tx_start_and_completion() {
-    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> = Rc::new(RefCell::new(Vec::new()));
     let poll_count = Rc::new(RefCell::new(0u32));
 
     let interferer = ObservingInterferer {
@@ -226,8 +225,7 @@ fn interferer_observes_node_tx_start_and_completion() {
 /// hearing its own carrier) depends on.
 #[test]
 fn interferer_observes_its_own_injected_tx() {
-    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> = Rc::new(RefCell::new(Vec::new()));
 
     let injector = InjectingObserver {
         inject: RefCell::new(Some(tx(7, 868_100_000, 30_000))),
@@ -334,8 +332,7 @@ fn each_interferer_observes_other_interferers_tx() {
 /// from collisions.
 #[test]
 fn interferer_observes_collided_flag_on_completion() {
-    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> = Rc::new(RefCell::new(Vec::new()));
     let poll_count = Rc::new(RefCell::new(0u32));
 
     let interferer = ObservingInterferer {
@@ -381,8 +378,7 @@ fn interferer_observes_collided_flag_on_completion() {
 /// transmissions it intended to suppress.
 #[test]
 fn next_poll_time_none_permanently_stops_polling() {
-    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> = Rc::new(RefCell::new(Vec::new()));
     let poll_count = Rc::new(RefCell::new(0u32));
 
     let interferer = ObservingInterferer {
@@ -409,8 +405,7 @@ fn next_poll_time_none_permanently_stops_polling() {
 /// (rolling averages, duty-cycle accounting, exponential backoff).
 #[test]
 fn observed_event_times_are_non_decreasing() {
-    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let observations: Rc<RefCell<Vec<(ChannelEvent, SimTime)>>> = Rc::new(RefCell::new(Vec::new()));
     let poll_count = Rc::new(RefCell::new(0u32));
 
     let interferer = ObservingInterferer {
