@@ -4,13 +4,13 @@ use crate::types::{ChannelEvent, NodeId, RxMetadata, Transmission};
 pub type CompletedTx = (NodeId, bool, bool, RxMetadata);
 
 /// Default LoRa path loss in dB (free-space + typical indoor attenuation baseline).
-pub const LORA_PATH_LOSS_DB: f32 = 100.0;
+const LORA_PATH_LOSS_DB: f32 = 100.0;
 
 /// Default LoRa noise floor in dBm (LoRa sensitivity at SF7/125 kHz).
-pub const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
+const LORA_NOISE_FLOOR_DBM: f32 = -117.0;
 
 /// Default co-channel rejection threshold in dB (LoRa capture effect threshold).
-pub const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
+const LORA_CO_CHANNEL_REJECTION_DB: f32 = 6.0;
 
 /// Configuration for physical-layer channel parameters.
 ///
@@ -328,6 +328,10 @@ impl Default for Channel {
     }
 }
 
+/// Returns `true` iff intervals [a_start, a_end) and [b_start, b_end) overlap.
+///
+/// Both bounds use strict `<` comparisons, so touching endpoints (e.g.
+/// `a_end == b_start`) do **not** count as overlapping.
 fn overlaps(a_start: SimTime, a_end: SimTime, b_start: SimTime, b_end: SimTime) -> bool {
     a_start < b_end && b_start < a_end
 }
@@ -351,6 +355,59 @@ mod tests {
             frequency,
             duration_us,
             tx_power_dbm,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // overlaps() unit tests
+    // Semantics: [a_start, a_end) and [b_start, b_end) overlap iff
+    //   a_start < b_end && b_start < a_end   (strict on both sides).
+    // Therefore a_end == b_start is NOT an overlap.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn overlaps_adjacent_no_overlap() {
+        // [0, 50_000) is immediately followed by [50_000, 100_000).
+        // Touching at exactly 50_000 must NOT be an overlap.
+        assert!(!overlaps(0, 50_000, 50_000, 100_000));
+    }
+
+    #[test]
+    fn overlaps_one_us_overlap() {
+        // [0, 50_001) extends 1 µs into [50_000, 100_000) → overlap.
+        assert!(overlaps(0, 50_001, 50_000, 100_000));
+    }
+
+    #[test]
+    fn overlaps_identical() {
+        // Identical intervals fully overlap.
+        assert!(overlaps(0, 100_000, 0, 100_000));
+    }
+
+    #[test]
+    fn overlaps_gap() {
+        // [0, 40_000) ends well before [60_000, 100_000) starts → no overlap.
+        assert!(!overlaps(0, 40_000, 60_000, 100_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // overlaps() proptest: symmetry invariant
+    // overlaps(a_s, a_e, b_s, b_e) == overlaps(b_s, b_e, a_s, a_e)
+    // -----------------------------------------------------------------------
+    proptest! {
+        #[test]
+        fn overlaps_is_symmetric(
+            a_start in 0u64..1_000_000u64,
+            a_len   in 1u64..500_000u64,
+            b_start in 0u64..1_000_000u64,
+            b_len   in 1u64..500_000u64,
+        ) {
+            let a_end = a_start + a_len;
+            let b_end = b_start + b_len;
+            prop_assert_eq!(
+                overlaps(a_start, a_end, b_start, b_end),
+                overlaps(b_start, b_end, a_start, a_end),
+            );
         }
     }
 
@@ -542,6 +599,47 @@ mod tests {
             .find(|(id, _, _, _)| *id == NodeId(1))
             .unwrap();
         assert!(strong_entry.2, "strongest should be marked captured");
+    }
+
+    /// A transmission can be provisionally `captured` by a weaker overlapping
+    /// signal, then later demoted to `collided` (and un-`captured`) when a
+    /// third equal-power signal arrives. This pins the `else` branch of
+    /// `begin_transmission` that clears a stale `captured` flag — otherwise a
+    /// frame that actually collided would still be reported as captured.
+    #[test]
+    fn captured_flag_cleared_by_later_equal_power_collision() {
+        let mut ch = Channel::new();
+        let strong = make_tx_power(7, 868_100_000, 50_000, 20);
+        let weak = make_tx_power(7, 868_100_000, 50_000, 14);
+        // `strong` captures over `weak` (delta = 6 dB == threshold).
+        ch.begin_transmission(NodeId(1), &strong, 0);
+        ch.begin_transmission(NodeId(2), &weak, 10_000);
+        // A third equal-power signal overlaps `strong`: delta = 0 < threshold,
+        // so `strong` must be demoted from captured to collided.
+        let equal = make_tx_power(7, 868_100_000, 50_000, 20);
+        ch.begin_transmission(NodeId(3), &equal, 20_000);
+        ch.resolve_at(70_000);
+        let completed = ch.drain_completed();
+
+        let strong_entry = completed
+            .iter()
+            .find(|(id, _, _, _)| *id == NodeId(1))
+            .unwrap();
+        assert!(
+            strong_entry.1,
+            "strong must be collided after equal-power overlap"
+        );
+        assert!(
+            !strong_entry.2,
+            "strong's stale captured flag must be cleared by the later collision"
+        );
+        // Nothing survives: no entry is both delivered and captured.
+        assert!(
+            !completed
+                .iter()
+                .any(|(_, collided, captured, _)| !collided && *captured),
+            "no transmission should be delivered-and-captured in this scenario"
+        );
     }
 
     #[test]
