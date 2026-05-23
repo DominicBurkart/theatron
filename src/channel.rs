@@ -616,6 +616,47 @@ mod tests {
         assert!(strong_entry.2, "strongest should be marked captured");
     }
 
+    /// A transmission can be provisionally `captured` by a weaker overlapping
+    /// signal, then later demoted to `collided` (and un-`captured`) when a
+    /// third equal-power signal arrives. This pins the `else` branch of
+    /// `begin_transmission` that clears a stale `captured` flag — otherwise a
+    /// frame that actually collided would still be reported as captured.
+    #[test]
+    fn captured_flag_cleared_by_later_equal_power_collision() {
+        let mut ch = Channel::new();
+        let strong = make_tx_power(7, 868_100_000, 50_000, 20);
+        let weak = make_tx_power(7, 868_100_000, 50_000, 14);
+        // `strong` captures over `weak` (delta = 6 dB == threshold).
+        ch.begin_transmission(NodeId(1), &strong, 0);
+        ch.begin_transmission(NodeId(2), &weak, 10_000);
+        // A third equal-power signal overlaps `strong`: delta = 0 < threshold,
+        // so `strong` must be demoted from captured to collided.
+        let equal = make_tx_power(7, 868_100_000, 50_000, 20);
+        ch.begin_transmission(NodeId(3), &equal, 20_000);
+        ch.resolve_at(70_000);
+        let completed = ch.drain_completed();
+
+        let strong_entry = completed
+            .iter()
+            .find(|(id, _, _, _)| *id == NodeId(1))
+            .unwrap();
+        assert!(
+            strong_entry.1,
+            "strong must be collided after equal-power overlap"
+        );
+        assert!(
+            !strong_entry.2,
+            "strong's stale captured flag must be cleared by the later collision"
+        );
+        // Nothing survives: no entry is both delivered and captured.
+        assert!(
+            !completed
+                .iter()
+                .any(|(_, collided, captured, _)| !collided && *captured),
+            "no transmission should be delivered-and-captured in this scenario"
+        );
+    }
+
     #[test]
     fn configurable_threshold() {
         let mut ch = Channel::with_config(ChannelConfig {
