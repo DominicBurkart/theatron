@@ -136,6 +136,55 @@ impl MetricsCollector {
     }
 }
 
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Verify that record_tx cannot overflow within a bounded simulation.
+    /// A 24-hour simulation at 1 TX per microsecond = 86_400_000_000 TXs,
+    /// which fits comfortably in u64.
+    #[kani::proof]
+    fn record_tx_no_overflow() {
+        let mut m = MetricsCollector::new();
+        let initial: u64 = kani::any();
+        kani::assume(initial < u64::MAX - 1);
+        m.total_tx = initial;
+        m.record_tx(NodeId(1));
+        assert_eq!(m.total_tx, initial + 1);
+    }
+
+    #[kani::proof]
+    fn record_rx_no_overflow() {
+        let mut m = MetricsCollector::new();
+        let initial: u64 = kani::any();
+        kani::assume(initial < u64::MAX - 1);
+        m.total_rx = initial;
+        m.record_rx(NodeId(1));
+        assert_eq!(m.total_rx, initial + 1);
+    }
+
+    #[kani::proof]
+    fn record_collision_no_overflow() {
+        let mut m = MetricsCollector::new();
+        let initial: u64 = kani::any();
+        kani::assume(initial < u64::MAX - 1);
+        m.total_collisions = initial;
+        m.record_collision();
+        assert_eq!(m.total_collisions, initial + 1);
+    }
+
+    #[kani::proof]
+    fn record_airtime_no_overflow() {
+        let mut m = MetricsCollector::new();
+        let initial: u64 = kani::any();
+        let duration: u64 = kani::any();
+        kani::assume(initial <= u64::MAX - duration);
+        m.total_airtime_us = initial;
+        m.record_airtime(duration);
+        assert_eq!(m.total_airtime_us, initial + duration);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

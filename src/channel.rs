@@ -336,6 +336,59 @@ fn overlaps(a_start: SimTime, a_end: SimTime, b_start: SimTime, b_end: SimTime) 
     a_start < b_end && b_start < a_end
 }
 
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn overlaps_reflexive() {
+        let start: u64 = kani::any();
+        let end: u64 = kani::any();
+        kani::assume(start < end);
+        assert!(overlaps(start, end, start, end));
+    }
+
+    #[kani::proof]
+    fn overlaps_symmetric() {
+        let a_start: u64 = kani::any();
+        let a_end: u64 = kani::any();
+        let b_start: u64 = kani::any();
+        let b_end: u64 = kani::any();
+        kani::assume(a_start < a_end);
+        kani::assume(b_start < b_end);
+        assert_eq!(
+            overlaps(a_start, a_end, b_start, b_end),
+            overlaps(b_start, b_end, a_start, a_end)
+        );
+    }
+
+    #[kani::proof]
+    fn overlaps_adjacent_is_false() {
+        let a_start: u64 = kani::any();
+        let duration_a: u64 = kani::any();
+        let duration_b: u64 = kani::any();
+        kani::assume(duration_a > 0 && duration_a < 1_000_000);
+        kani::assume(duration_b > 0 && duration_b < 1_000_000);
+        kani::assume(a_start < u64::MAX - duration_a - duration_b);
+        let a_end = a_start + duration_a;
+        let b_start = a_end; // adjacent, not overlapping
+        let b_end = b_start + duration_b;
+        assert!(!overlaps(a_start, a_end, b_start, b_end));
+    }
+
+    #[kani::proof]
+    fn compute_rssi_snr_finite() {
+        let tx_power: i8 = kani::any();
+        let ch = Channel::new();
+        let rssi = ch.compute_rssi(tx_power);
+        let snr = ch.compute_snr(rssi);
+        assert!(rssi.is_finite());
+        assert!(snr.is_finite());
+        // SNR = rssi - noise_floor = (tx_power - path_loss) - noise_floor
+        // All inputs are finite, so result must be finite.
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

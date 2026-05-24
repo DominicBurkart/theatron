@@ -342,6 +342,89 @@ impl Scheduler {
     }
 }
 
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn scheduled_event_ord_consistent() {
+        let time_a: u64 = kani::any();
+        let seq_a: u64 = kani::any();
+        let time_b: u64 = kani::any();
+        let seq_b: u64 = kani::any();
+
+        let a = ScheduledEvent {
+            time: time_a,
+            seq: seq_a,
+            kind: EventKind::Wake {
+                node_id: crate::types::NodeId(0),
+            },
+        };
+        let b = ScheduledEvent {
+            time: time_b,
+            seq: seq_b,
+            kind: EventKind::Wake {
+                node_id: crate::types::NodeId(0),
+            },
+        };
+
+        // Verify Ord is consistent with PartialOrd
+        assert_eq!(a.partial_cmp(&b), Some(a.cmp(&b)));
+
+        // Verify antisymmetry: if a <= b and b <= a then a == b (in ordering)
+        if a.cmp(&b) == Ordering::Equal {
+            assert_eq!(b.cmp(&a), Ordering::Equal);
+        }
+
+        // Verify the min-heap inversion: earlier time => Greater ordering
+        // (BinaryHeap is a max-heap, so we reverse to get min-heap behavior)
+        if time_a < time_b {
+            assert!(a.cmp(&b) == Ordering::Greater || a.cmp(&b) == Ordering::Equal);
+        }
+    }
+
+    #[kani::proof]
+    fn scheduled_event_ord_transitive() {
+        let t1: u64 = kani::any();
+        let t2: u64 = kani::any();
+        let t3: u64 = kani::any();
+        let s1: u64 = kani::any();
+        let s2: u64 = kani::any();
+        let s3: u64 = kani::any();
+
+        let kind = EventKind::Wake {
+            node_id: crate::types::NodeId(0),
+        };
+
+        let a = ScheduledEvent {
+            time: t1,
+            seq: s1,
+            kind: kind.clone(),
+        };
+        let b = ScheduledEvent {
+            time: t2,
+            seq: s2,
+            kind: kind.clone(),
+        };
+        let c = ScheduledEvent {
+            time: t3,
+            seq: s3,
+            kind: kind.clone(),
+        };
+
+        // Transitivity: if a >= b and b >= c then a >= c
+        let ab = a.cmp(&b);
+        let bc = b.cmp(&c);
+        let ac = a.cmp(&c);
+
+        if (ab == Ordering::Greater || ab == Ordering::Equal)
+            && (bc == Ordering::Greater || bc == Ordering::Equal)
+        {
+            assert!(ac == Ordering::Greater || ac == Ordering::Equal);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
