@@ -2,12 +2,15 @@ use theatron::time::SimTime;
 use theatron::traits::InterferenceSource;
 use theatron::types::{ChannelEvent, Transmission};
 
+/// EU868 legal TX power for 868.x MHz: 14 dBm. Inlined because every
+/// transmission this interferer injects uses the same value.
+const TX_POWER_DBM: i8 = 14;
+
 pub struct PeriodicInterferer {
     period_us: u64,
     sf: u8,
     frequency: u32,
     duration_us: u64,
-    tx_power_dbm: i8,
 }
 
 impl PeriodicInterferer {
@@ -17,7 +20,6 @@ impl PeriodicInterferer {
             sf,
             frequency,
             duration_us,
-            tx_power_dbm: 14,
         }
     }
 }
@@ -33,7 +35,7 @@ impl InterferenceSource for PeriodicInterferer {
             coding_rate: 5,
             frequency: self.frequency,
             duration_us: self.duration_us,
-            tx_power_dbm: self.tx_power_dbm,
+            tx_power_dbm: TX_POWER_DBM,
         })
     }
 
@@ -60,6 +62,7 @@ mod tests {
         assert_eq!(tx.frequency, 868_100_000);
         assert_eq!(tx.payload, vec![0xFF]);
         assert_eq!(tx.duration_us, 500_000);
+        assert_eq!(tx.tx_power_dbm, TX_POWER_DBM);
     }
 
     #[test]
