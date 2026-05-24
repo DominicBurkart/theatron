@@ -71,18 +71,14 @@ impl AlohaNode {
             });
             Some(time)
         } else {
-            // Check whether traffic can ever produce another payload. If the
-            // model has a fixed count and it is exhausted, stop scheduling.
-            // We probe one interval ahead; if still None at a future time, we
-            // assume exhaustion — TrafficModel::next_payload is idempotent for
-            // a depleted PeriodicTraffic (remaining == 0 always returns None).
+            // Probe one poll interval ahead: if the traffic model still has
+            // nothing then, treat it as permanently exhausted and stop
+            // rescheduling. PeriodicTraffic's `next_payload` is safe to call
+            // early; it gates on `time >= next_time` rather than consuming.
             let future = time + self.poll_interval_us;
             if self.traffic.next_payload(future).is_none() {
-                None // traffic permanently exhausted — do not reschedule
+                None
             } else {
-                // Payload will be ready in the future; wake up and check again.
-                // (next_payload consumed the future slot, but PeriodicTraffic
-                //  re-checks time >= next_time, so calling it early is safe.)
                 Some(future)
             }
         }
@@ -95,8 +91,7 @@ impl NodeHandle for AlohaNode {
     }
 
     /// Pure ALOHA is "transmit and forget": no ACK or retransmission, so the
-    /// sender ignores incoming frames. ACK-based retransmission would use this
-    /// hook plus a new `on_tx_complete` scheduler callback for collision backoff.
+    /// sender ignores incoming frames.
     fn on_receive(&mut self, _frame: RxMetadata, _time: SimTime) -> Option<SimTime> {
         None
     }

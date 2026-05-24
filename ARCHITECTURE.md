@@ -108,7 +108,7 @@ The scheduler calls `poll_transmit` on the protocol; the protocol (or its adapte
 
 ### Validation Target: LoRaWAN via lora-rs
 
-LoRaWAN via lora-rs is the first real-world protocol used to prove the simulation engine works with a real stack. The validation example is external to theatron core and comprises three components:
+LoRaWAN via lora-rs is the first real-world protocol used to prove the simulation engine works with a real stack. The validation example lives outside theatron core and comprises three components:
 
 - **LoRaWAN device adapter**: wraps `lorawan-device::nb_device` to implement the `Protocol` trait
 - **Simulated network server**: responds to joins and schedules downlinks (see below)
@@ -240,7 +240,7 @@ LoRaWAN is not peer-to-peer — a server must generate join-accept frames and sc
 - Schedules downlink frames into RX1/RX2 windows
 - Manages frame counters and DevAddr assignment
 
-The server implements `Protocol` and participates in the simulation as a node with network-side visibility. It is part of the lora-rs validation example, not theatron core — consistent with the principle that protocol logic lives outside theatron.
+The server implements `Protocol` and participates in the simulation as a node with network-side visibility. It ships with the validation example, not theatron core — see [Protocol logic lives outside theatron](#protocol-logic-lives-outside-theatron).
 
 ### Channel / Medium
 

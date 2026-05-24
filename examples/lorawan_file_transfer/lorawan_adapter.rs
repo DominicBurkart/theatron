@@ -176,13 +176,9 @@ mod tests {
 
     /// Per-node seed derivation must be deterministic: the same
     /// `(master_seed, node_id)` pair must always produce the same output.
-    /// This is the reproducibility guarantee called out in
-    /// ARCHITECTURE.md "Randomness".
-    ///
-    /// The concrete expected value pins the formula output:
-    ///   0xDEAD_BEEF ^ (1u64.wrapping_mul(0x9e3779b97f4a7c15))
-    ///   = 0x0000_0000_DEAD_BEEF ^ 0x9e37_79b9_7f4a_7c15
-    ///   = 0x9e37_79b9_a1e7_c2fa
+    /// This is the reproducibility guarantee from `ARCHITECTURE.md` §
+    /// "Randomness". The pinned value below is `0xDEAD_BEEF XOR
+    /// (1 * 0x9e3779b97f4a7c15) = 0x9e3779b9a1e7c2fa`.
     #[test]
     fn derive_seed_is_deterministic() {
         assert_eq!(derive_seed(0xDEAD_BEEF, 1), 0x9e3779b9a1e7c2fa_u64);
