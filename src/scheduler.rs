@@ -349,6 +349,10 @@ mod tests {
     use crate::types::{ChannelEvent, Transmission};
     use proptest::prelude::*;
 
+    #[path = "../tests/helpers.rs"]
+    mod helpers;
+    use helpers::make_tx_default as make_tx;
+
     struct SimpleNode {
         id: NodeId,
         pending_tx: Option<Transmission>,
@@ -508,18 +512,6 @@ mod tests {
         }
         fn update(&mut self, _t: SimTime) -> Option<SimTime> {
             None
-        }
-    }
-
-    fn make_tx(sf: u8, frequency: u32, duration_us: u64) -> Transmission {
-        Transmission {
-            payload: vec![0xAB],
-            sf,
-            bandwidth: 125_000,
-            coding_rate: 5,
-            frequency,
-            duration_us,
-            tx_power_dbm: 14,
         }
     }
 
