@@ -71,6 +71,20 @@ impl ChannelConfig {
             co_channel_rejection_db: LORA_CO_CHANNEL_REJECTION_DB,
         }
     }
+
+    /// Received signal strength (dBm) for a transmission at `tx_power_dbm`,
+    /// after applying this configuration's path loss.
+    #[inline]
+    pub fn rssi(&self, tx_power_dbm: i8) -> f32 {
+        tx_power_dbm as f32 - self.path_loss_db
+    }
+
+    /// Signal-to-noise ratio (dB) for a received signal of `rssi`, relative
+    /// to this configuration's noise floor.
+    #[inline]
+    pub fn snr(&self, rssi: f32) -> f32 {
+        rssi - self.noise_floor_dbm
+    }
 }
 
 impl Default for ChannelConfig {
@@ -153,11 +167,11 @@ impl Channel {
     }
 
     pub fn compute_rssi(&self, tx_power_dbm: i8) -> f32 {
-        tx_power_dbm as f32 - self.config.path_loss_db
+        self.config.rssi(tx_power_dbm)
     }
 
     pub fn compute_snr(&self, rssi: f32) -> f32 {
-        rssi - self.config.noise_floor_dbm
+        self.config.snr(rssi)
     }
 
     /// Begin a transmission on the channel, returning a `TransmissionStarted` event.
@@ -301,13 +315,14 @@ impl Channel {
     /// assert!(!completed[0].1);
     /// ```
     pub fn drain_completed(&mut self) -> Vec<CompletedTx> {
-        let path_loss_db = self.config.path_loss_db;
-        let noise_floor_dbm = self.config.noise_floor_dbm;
+        // Snapshot the config so the closure does not need to borrow `self`
+        // while `self.completed` is mutably drained.
+        let config = self.config.clone();
         self.completed
             .drain(..)
             .map(|tx| {
-                let rssi = tx.tx_power_dbm as f32 - path_loss_db;
-                let snr = rssi - noise_floor_dbm;
+                let rssi = config.rssi(tx.tx_power_dbm);
+                let snr = config.snr(rssi);
                 let metadata = RxMetadata {
                     payload: tx.payload,
                     rssi,
