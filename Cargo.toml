@@ -10,9 +10,9 @@ repository = "https://github.com/DominicBurkart/theatron"
 keywords = ["lora", "lorawan", "protocol", "simulation", "wireless"]
 categories = ["simulation", "network-programming"]
 
-[[bin]]
+[lib]
 name = "theatron"
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [[example]]
 name = "lorawan_file_transfer"
