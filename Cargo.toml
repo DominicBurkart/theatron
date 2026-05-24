@@ -23,7 +23,7 @@ name = "aloha"
 path = "examples/aloha/main.rs"
 
 [dependencies]
-rand_core = { version = "0.6", default-features = false, optional = true } # optional; see [features] below
+rand_core = { version = "0.6", default-features = false }
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
@@ -35,7 +35,3 @@ proptest = "1"
 [profile.release]
 lto = true
 codegen-units = 1
-
-[features]
-default = ["prng"]
-prng = ["rand_core"]
