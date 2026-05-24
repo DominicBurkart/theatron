@@ -21,9 +21,6 @@ pub struct AlohaNode {
     poll_interval_us: u64,
     sf: u8,
     frequency: u32,
-    bandwidth: u32,
-    coding_rate: u8,
-    tx_power_dbm: i8,
     tx_duration_us: u64,
 }
 
@@ -43,9 +40,6 @@ impl AlohaNode {
             poll_interval_us,
             sf,
             frequency,
-            bandwidth: DEFAULT_BANDWIDTH_HZ,
-            coding_rate: DEFAULT_CODING_RATE,
-            tx_power_dbm: DEFAULT_TX_POWER_DBM,
             tx_duration_us,
         }
     }
@@ -63,11 +57,11 @@ impl AlohaNode {
             self.pending_tx = Some(Transmission {
                 payload,
                 sf: self.sf,
-                bandwidth: self.bandwidth,
-                coding_rate: self.coding_rate,
+                bandwidth: DEFAULT_BANDWIDTH_HZ,
+                coding_rate: DEFAULT_CODING_RATE,
                 frequency: self.frequency,
                 duration_us: self.tx_duration_us,
-                tx_power_dbm: self.tx_power_dbm,
+                tx_power_dbm: DEFAULT_TX_POWER_DBM,
             });
             Some(time)
         } else {
