@@ -12,7 +12,7 @@ struct MinimalRadio {
     rx_buf: [u8; 256],
     rx_len: usize,
     pending_tx: Option<Transmission>,
-    pending_downlink: Option<Vec<u8>>,
+    downlink_ready: bool,
 }
 
 impl MinimalRadio {
@@ -21,7 +21,7 @@ impl MinimalRadio {
             rx_buf: [0u8; 256],
             rx_len: 0,
             pending_tx: None,
-            pending_downlink: None,
+            downlink_ready: false,
         }
     }
 
@@ -72,7 +72,7 @@ impl PhyRxTx for MinimalRadio {
             Event::RxRequest(_) => Ok(Response::Rxing),
             Event::CancelRx => Ok(Response::Idle),
             Event::Phy(()) => {
-                if self.pending_downlink.take().is_some() {
+                if std::mem::take(&mut self.downlink_ready) {
                     Ok(Response::RxDone(RxQuality::new(-80, 10)))
                 } else {
                     Ok(Response::Idle)

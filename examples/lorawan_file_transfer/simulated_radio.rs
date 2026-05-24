@@ -12,7 +12,7 @@ pub struct SimulatedRadio {
     rx_buf: [u8; 256],
     rx_len: usize,
     pending_tx: Option<Transmission>,
-    pending_downlink: Option<Vec<u8>>,
+    downlink_ready: bool,
     current_rx_config: Option<RfConfig>,
 }
 
@@ -22,7 +22,7 @@ impl SimulatedRadio {
             rx_buf: [0u8; 256],
             rx_len: 0,
             pending_tx: None,
-            pending_downlink: None,
+            downlink_ready: false,
             current_rx_config: None,
         }
     }
@@ -44,13 +44,8 @@ impl SimulatedRadio {
         let len = data.len().min(256);
         self.rx_buf[..len].copy_from_slice(&data[..len]);
         self.rx_len = len;
-        self.pending_downlink = Some(data);
+        self.downlink_ready = true;
         true
-    }
-
-    #[allow(dead_code)]
-    pub fn has_pending_downlink(&self) -> bool {
-        self.pending_downlink.is_some()
     }
 }
 
@@ -112,7 +107,7 @@ impl PhyRxTx for SimulatedRadio {
                 Ok(Response::Idle)
             }
             Event::Phy(()) => {
-                if self.pending_downlink.take().is_some() {
+                if std::mem::take(&mut self.downlink_ready) {
                     Ok(Response::RxDone(RxQuality::new(-80, 10)))
                 } else {
                     Ok(Response::Idle)
@@ -159,9 +154,9 @@ mod tests {
     }
 
     #[test]
-    fn new_radio_no_pending_downlink() {
+    fn new_radio_no_downlink_ready() {
         let radio = SimulatedRadio::new();
-        assert!(!radio.has_pending_downlink());
+        assert!(!radio.downlink_ready);
     }
 
     #[test]
@@ -218,6 +213,17 @@ mod tests {
     #[test]
     fn phy_without_downlink_returns_idle() {
         let mut radio = SimulatedRadio::new();
+        let result = radio.handle_event(Event::Phy(()));
+        assert!(matches!(result, Ok(Response::Idle)));
+    }
+
+    #[test]
+    fn phy_consumes_downlink_flag() {
+        let mut radio = SimulatedRadio::new();
+        let _ = radio.handle_event(Event::RxRequest(make_rf()));
+        assert!(radio.inject_downlink(vec![0xAB], TEST_SF, TEST_FREQ));
+        let _ = radio.handle_event(Event::Phy(()));
+        // Second Phy event must report Idle: the flag is one-shot.
         let result = radio.handle_event(Event::Phy(()));
         assert!(matches!(result, Ok(Response::Idle)));
     }
