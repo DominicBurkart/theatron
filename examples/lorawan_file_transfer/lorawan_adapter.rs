@@ -2,13 +2,13 @@ use lorawan_device::nb_device::radio::Event as RadioEvent;
 use lorawan_device::nb_device::{Device, Response};
 use lorawan_device::{AppSKey, DevAddr, JoinMode, NewSKey};
 
+use theatron::prng::Xorshift64;
 use theatron::scheduler::NodeHandle;
 use theatron::time::SimTime;
 use theatron::traits::TrafficModel;
 use theatron::types::{NodeId, RxMetadata, Transmission};
 
 use crate::file_fragmenter::FileFragmenter;
-use crate::prng::Xorshift64;
 use crate::simulated_radio::SimulatedRadio;
 
 const BUF_SIZE: usize = 255;

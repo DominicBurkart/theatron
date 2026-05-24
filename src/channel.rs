@@ -929,4 +929,139 @@ mod tests {
             "equal-power collisions should not be delivered"
         );
     }
+
+    // -----------------------------------------------------------------
+    // compute_rssi / compute_snr direct unit tests
+    //
+    // These public methods serve as the documented physical-layer
+    // helpers for protocol adapters. They are also the source-of-truth
+    // formula that `drain_completed` mirrors inline (the duplication is
+    // forced by the borrow checker — `drain_completed` already holds a
+    // mutable borrow of `self.completed`). Pinning the formula and the
+    // self-consistency invariant here protects against silent drift if
+    // either site is edited.
+    // -----------------------------------------------------------------
+
+    /// `compute_rssi` is purely `tx_power_dbm - path_loss_db`. It does
+    /// not depend on the channel's active or completed transmissions.
+    #[test]
+    fn compute_rssi_uses_only_tx_power_and_path_loss() {
+        let ch = Channel::with_config(ChannelConfig {
+            path_loss_db: 80.0,
+            noise_floor_dbm: -100.0,
+            co_channel_rejection_db: 3.0,
+        });
+        // Spot values pinned against the formula: rssi = power - path_loss.
+        assert!((ch.compute_rssi(14) - (14.0_f32 - 80.0)).abs() < 1e-6);
+        assert!((ch.compute_rssi(0) - (-80.0_f32)).abs() < 1e-6);
+        assert!((ch.compute_rssi(-20) - (-100.0_f32)).abs() < 1e-6);
+        assert!((ch.compute_rssi(i8::MAX) - (i8::MAX as f32 - 80.0)).abs() < 1e-6);
+        assert!((ch.compute_rssi(i8::MIN) - (i8::MIN as f32 - 80.0)).abs() < 1e-6);
+    }
+
+    /// `compute_snr` is purely `rssi - noise_floor_dbm`. Lower noise
+    /// floor yields higher SNR for the same RSSI, by exactly the
+    /// noise-floor delta.
+    #[test]
+    fn compute_snr_is_rssi_minus_noise_floor() {
+        let lora = Channel::new(); // noise_floor = -117
+        let quiet = Channel::with_config(ChannelConfig {
+            path_loss_db: 100.0,
+            noise_floor_dbm: -130.0,
+            co_channel_rejection_db: 6.0,
+        });
+        let rssi = -86.0_f32;
+        // lora: snr = rssi - (-117) = 31
+        // quiet: snr = rssi - (-130) = 44
+        assert!((lora.compute_snr(rssi) - 31.0).abs() < 1e-6);
+        assert!((quiet.compute_snr(rssi) - 44.0).abs() < 1e-6);
+        // The two SNRs must differ by exactly the noise-floor delta.
+        assert!(
+            ((quiet.compute_snr(rssi) - lora.compute_snr(rssi))
+                - (lora.config().noise_floor_dbm - quiet.config().noise_floor_dbm))
+                .abs()
+                < 1e-6
+        );
+    }
+
+    /// Self-consistency: the RSSI/SNR delivered in `RxMetadata` from a
+    /// successful transmission must equal `compute_rssi`/`compute_snr`
+    /// for the same transmit power, on the same channel. This is the
+    /// contract a protocol adapter relies on when predicting whether
+    /// it will hear a peer based on a known tx power.
+    ///
+    /// Verified across the LoRa defaults and a custom non-LoRa config
+    /// to ensure the contract holds under any `ChannelConfig`.
+    #[test]
+    fn compute_rssi_snr_match_drain_completed_metadata() {
+        let configs = [
+            ChannelConfig::lora_defaults(),
+            ChannelConfig {
+                path_loss_db: 60.0,
+                noise_floor_dbm: -95.0,
+                co_channel_rejection_db: 3.0,
+            },
+        ];
+        for cfg in configs {
+            let mut ch = Channel::with_config(cfg.clone());
+            for power in [-10i8, 0, 14, 20, 22] {
+                let t = make_tx_power(7, 868_100_000, 10_000, power);
+                ch.begin_transmission(NodeId(power as u32), &t, 0);
+                ch.resolve_at(10_000);
+                let completed = ch.drain_completed();
+                let (_, collided, _, meta) = &completed[0];
+                assert!(!*collided, "single TX must not collide");
+                assert!(
+                    (meta.rssi - ch.compute_rssi(power)).abs() < 1e-6,
+                    "delivered RSSI must equal compute_rssi(power); cfg={cfg:?}, power={power}"
+                );
+                assert!(
+                    (meta.snr - ch.compute_snr(meta.rssi)).abs() < 1e-6,
+                    "delivered SNR must equal compute_snr(rssi); cfg={cfg:?}, power={power}"
+                );
+            }
+        }
+    }
+
+    /// `compute_rssi` is stateless: calling it before, between, and
+    /// after transmissions yields identical values for the same input.
+    #[test]
+    fn compute_rssi_is_stateless_across_transmissions() {
+        let mut ch = Channel::new();
+        let before = ch.compute_rssi(14);
+        let tx = make_tx_power(7, 868_100_000, 10_000, 14);
+        ch.begin_transmission(NodeId(1), &tx, 0);
+        let mid = ch.compute_rssi(14);
+        ch.resolve_at(10_000);
+        let after = ch.compute_rssi(14);
+        let _ = ch.drain_completed();
+        let drained = ch.compute_rssi(14);
+        assert_eq!(before, mid);
+        assert_eq!(mid, after);
+        assert_eq!(after, drained);
+    }
+
+    proptest! {
+        /// For any (power, path_loss, noise_floor) triple, the helpers
+        /// satisfy `compute_snr(compute_rssi(power)) == power
+        /// - path_loss - noise_floor` (to within f32 epsilon).
+        #[test]
+        fn compute_helpers_satisfy_closed_form(
+            power in i8::MIN..=i8::MAX,
+            path_loss in 30.0f32..150.0,
+            noise_floor in -150.0f32..-50.0,
+        ) {
+            let ch = Channel::with_config(ChannelConfig {
+                path_loss_db: path_loss,
+                noise_floor_dbm: noise_floor,
+                co_channel_rejection_db: 6.0,
+            });
+            let rssi = ch.compute_rssi(power);
+            let snr = ch.compute_snr(rssi);
+            let expected = power as f32 - path_loss - noise_floor;
+            prop_assert!((snr - expected).abs() < 1e-3,
+                "snr={} expected={} power={} path_loss={} noise_floor={}",
+                snr, expected, power, path_loss, noise_floor);
+        }
+    }
 }

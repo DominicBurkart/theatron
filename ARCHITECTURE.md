@@ -260,6 +260,8 @@ trait InterferenceSource {
 }
 ```
 
+`next_poll_time` returns the next simulation time at which `poll_inject` should be called, or `None` to stop polling permanently. This keeps the scheduler event-driven (consistent with `Protocol::update`'s `Option<SimTime>` contract) instead of polling every interferer on every tick.
+
 Planned interference models:
 - **Saturated band**: high-volume legitimate-looking traffic overwhelming the channel
 - **Periodic interferer**: burst interference on a regular schedule (models co-channel ISM band users)
