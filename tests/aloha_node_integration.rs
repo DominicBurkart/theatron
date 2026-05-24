@@ -1,0 +1,263 @@
+//! Integration tests for the `AlohaNode` example.
+//!
+//! The existing `tests/aloha.rs` file uses local `PeriodicSender`/`Receiver`
+//! helpers and explicitly calls out that this means `AlohaNode`,
+//! `AlohaReceiver`, and `PeriodicTraffic` from `examples/aloha/aloha_node.rs`
+//! are **not** exercised end-to-end. This file closes that gap by pulling
+//! the example module in directly via `#[path]` (the pattern the existing
+//! doc-comment in `tests/aloha.rs` recommends) and running it through the
+//! real scheduler + channel.
+//!
+//! # Undertested component
+//! `examples/aloha/aloha_node.rs` — `AlohaNode`, `AlohaReceiver`, and the
+//! `PeriodicTraffic` traffic model.
+//!
+//! # Current state
+//! - `PeriodicTraffic` has two focused unit tests in the example file.
+//! - `AlohaNode` has two shallow unit tests; `AlohaReceiver` has one. None
+//!   of these drive the types through a real `Scheduler` run.
+//! - The broader `tests/aloha.rs` integration file deliberately sidesteps
+//!   them and uses hand-written stand-ins.
+//!
+//! # Invariants validated
+//! 1. A single-payload `AlohaNode` drives exactly one TX end-to-end through
+//!    the scheduler + channel and stops scheduling itself (no infinite wake
+//!    loop) once traffic is exhausted.
+//! 2. A passive `AlohaReceiver` records exactly one RX for the emitted TX
+//!    (delivery confirmed by rx count only; the scheduler does not expose
+//!    node handles post-run, so byte-level equality of the received payload
+//!    is not asserted here — the `Transmission::payload` copy is covered by
+//!    unit tests in `examples/aloha/aloha_node.rs`).
+//! 3. Two single-payload `AlohaNode`s on orthogonal spreading factors both
+//!    deliver, with no collisions, regardless of simultaneous start.
+//! 4. `PeriodicTraffic` invariant (proptest): it yields at most `count`
+//!    payloads over any monotonically-nondecreasing time sequence, and every
+//!    payload equals the configured bytes.
+//! 5. `AlohaNode::update` returns `Some(future_time)` when no payload is
+//!    ready at the current time but remaining traffic exists — the
+//!    "defer-and-wake" branch of `try_generate_tx`.
+//!
+//! # Strategy
+//! - **Realistic integration** (scheduler + channel + example types) for
+//!   (1)-(3). These exercise the code path that `tests/aloha.rs` currently
+//!   skips.
+//! - **Proptest** for (4), the simplest invariant of the traffic model that
+//!   is load-bearing for any protocol using it.
+//! - **Unit test** for (5) to cover the `Some(future)` arm of
+//!   `try_generate_tx` that integration tests miss because they all use
+//!   `count = 1`.
+//! - No doctests: these types live in an example crate and are not part of
+//!   the public theatron API surface.
+//!
+//! # Out of scope
+//! A latent interaction between `AlohaNode::update`'s "probe" logic and
+//! `PeriodicTraffic`'s stateful `next_payload` causes higher payload counts
+//! to be consumed out-of-band. That is a product bug; these tests stick to
+//! `count = 1` scenarios for integration tests so they exercise the
+//! integration without depending on that interaction.
+
+#[path = "../examples/aloha/aloha_node.rs"]
+mod aloha_node;
+
+use aloha_node::{AlohaNode, AlohaReceiver, PeriodicTraffic};
+use proptest::prelude::*;
+use theatron::scheduler::{NodeHandle, Scheduler};
+use theatron::traits::TrafficModel;
+use theatron::types::NodeId;
+
+/// Convenience: construct a single-payload `AlohaNode` with EU868 parameters.
+fn make_single_shot_aloha(id: u32, payload: Vec<u8>, sf: u8, frequency: u32) -> AlohaNode {
+    let interval_us = 1_000_000; // 1 s between payloads (only one ever emitted)
+    let tx_duration_us = 50_000; // 50 ms on-air
+    let traffic = PeriodicTraffic::new(payload, interval_us, 1);
+    AlohaNode::new(
+        NodeId(id),
+        Box::new(traffic),
+        interval_us,
+        sf,
+        frequency,
+        tx_duration_us,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// (1) Single-shot end-to-end: exactly one TX, scheduler halts on exhaustion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn single_shot_aloha_emits_exactly_one_tx_and_scheduler_halts() {
+    let end_time = 10_000_000;
+    let mut sched = Scheduler::new(end_time);
+    let sender = make_single_shot_aloha(1, vec![0x42], 7, 868_100_000);
+    let receiver = AlohaReceiver::new(NodeId(99));
+    sched.add_node(Box::new(sender), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+
+    assert_eq!(sched.metrics.total_tx, 1);
+    assert_eq!(sched.metrics.total_collisions, 0);
+    // The scheduler should drain its queue well before `end_time` when the
+    // node's traffic is exhausted: `AlohaNode::update` returns `None` and no
+    // further wakes are scheduled.
+    assert!(
+        sched.current_time() < end_time,
+        "scheduler must halt before end_time when traffic is exhausted; \
+         current_time={} end_time={}",
+        sched.current_time(),
+        end_time
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (2) Passive AlohaReceiver records one RX for the emitted TX
+// (delivery confirmed by rx count only — see module-level invariant (2))
+// ---------------------------------------------------------------------------
+
+#[test]
+fn single_shot_aloha_delivers_payload_to_receiver() {
+    let mut sched = Scheduler::new(5_000_000);
+    let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+    let sender = make_single_shot_aloha(1, payload.clone(), 7, 868_100_000);
+    let receiver = AlohaReceiver::new(NodeId(99));
+    sched.add_node(Box::new(sender), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+
+    assert_eq!(sched.metrics.total_tx, 1);
+    assert_eq!(
+        sched.metrics.node_rx_count(NodeId(99)),
+        1,
+        "AlohaReceiver must receive the one frame the sender emitted"
+    );
+    assert_eq!(sched.metrics.total_collisions, 0);
+}
+
+// ---------------------------------------------------------------------------
+// (3) Orthogonal SFs: two simultaneous AlohaNodes both deliver
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_aloha_nodes_on_different_sf_both_deliver() {
+    let mut sched = Scheduler::new(5_000_000);
+    let a = make_single_shot_aloha(1, vec![0xAA], 7, 868_100_000);
+    let b = make_single_shot_aloha(2, vec![0xBB], 8, 868_100_000);
+    let receiver = AlohaReceiver::new(NodeId(99));
+    sched.add_node(Box::new(a), Some(0));
+    sched.add_node(Box::new(b), Some(0));
+    sched.add_node(Box::new(receiver), None);
+    sched.run();
+
+    assert_eq!(sched.metrics.total_tx, 2);
+    assert_eq!(sched.metrics.total_collisions, 0);
+    // Each TX reaches the two non-sender nodes (the other sender + the
+    // passive receiver), so total_rx = 2 * 2 = 4.
+    assert_eq!(sched.metrics.total_rx, 4);
+    assert_eq!(sched.metrics.node_rx_count(NodeId(99)), 2);
+}
+
+// ---------------------------------------------------------------------------
+// (5) Defer-and-wake: update returns Some(future) when payload not yet ready
+// ---------------------------------------------------------------------------
+
+/// Exercises the `Some(future)` arm of `AlohaNode::try_generate_tx`.
+///
+/// With `count = 2` and `poll_interval_us = 1_000_000 µs`:
+/// - `update(0)` generates the first TX (remaining → 1, next_time → 1_000_000)
+///   and returns `Some(0)`.
+/// - After draining via `poll_transmit`, calling `update(500_000)` finds:
+///   - `next_payload(500_000)` → `None` (too early; next_time = 1_000_000)
+///   - probe: `next_payload(1_500_000)` → `Some` (remaining → 0)
+///   - returns `Some(1_500_000)` ← the previously-uncovered branch.
+///
+/// NOTE: the probe call has a destructive side effect — it consumes the
+/// second payload slot (remaining 1 → 0) as part of the known
+/// probe/`PeriodicTraffic` interaction documented in the module-level
+/// "Out of scope" section. A follow-up `update(1_500_000)` would therefore
+/// return `None` (not `Some`) and the second TX would never fire. This test
+/// only validates the branch's immediate return value, not downstream
+/// behavior — do not treat a pass here as evidence that the second payload
+/// actually gets transmitted.
+#[test]
+fn aloha_node_defers_wake_when_payload_not_yet_ready() {
+    let poll_interval_us = 1_000_000_u64;
+    let tx_duration_us = 50_000_u64;
+    // count = 2: first payload consumed at t=0, second not ready until t=1_000_000.
+    let traffic = PeriodicTraffic::new(vec![0xAB], poll_interval_us, 2);
+    let mut node = AlohaNode::new(
+        NodeId(1),
+        Box::new(traffic),
+        poll_interval_us,
+        7,
+        868_100_000,
+        tx_duration_us,
+    );
+
+    // First update: payload is available immediately at t=0.
+    let wake0 = node.update(0);
+    assert_eq!(wake0, Some(0), "first update should return Some(0)");
+    // Drain the pending TX so pending_tx is None for the next update.
+    assert!(node.poll_transmit(0).is_some());
+
+    // Second update at t=500_000 (halfway through the 1 s interval).
+    // next_payload(500_000) → None (too early).
+    // Probe next_payload(1_500_000) → Some (remaining=1, future slot ready).
+    // Expected: Some(1_500_000) — defer and wake at the probed future time.
+    let wake1 = node.update(500_000);
+    assert_eq!(
+        wake1,
+        Some(poll_interval_us + 500_000),
+        "update before next interval should defer to poll_interval_us + current_time"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (4) PeriodicTraffic proptest — invariants of the traffic model
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// For any count C and any strictly-increasing poll time sequence spaced
+    /// at `interval_us`, `PeriodicTraffic` yields exactly C payloads and each
+    /// equals the configured bytes. This pins down the core contract the
+    /// `AlohaNode` relies on.
+    #[test]
+    fn periodic_traffic_yields_exactly_count_payloads(
+        count in 0usize..=8,
+        interval_us in 1u64..=2_000_000,
+    ) {
+        let payload_bytes = vec![0x5A, 0xA5];
+        let mut model = PeriodicTraffic::new(payload_bytes.clone(), interval_us, count);
+        let mut emitted = 0usize;
+        // Sample at `interval_us` cadence well past `count` intervals to
+        // ensure we never emit more than `count`.
+        for step in 0..(count + 4) {
+            let t = (step as u64) * interval_us;
+            if let Some(p) = model.next_payload(t) {
+                prop_assert_eq!(p, payload_bytes.clone());
+                emitted += 1;
+            }
+        }
+        prop_assert_eq!(emitted, count);
+    }
+
+    /// Calling `next_payload` before `interval_us` has elapsed since the
+    /// previous emission must return `None`: the model gates on time.
+    #[test]
+    fn periodic_traffic_interval_gates_next_payload(
+        interval_us in 100u64..=1_000_000,
+        early_offset in 1u64..=99,
+    ) {
+        let mut model = PeriodicTraffic::new(vec![0x01], interval_us, 3);
+        // First payload is available at t = 0.
+        prop_assert!(model.next_payload(0).is_some());
+        // A query strictly inside the interval must not emit.
+        // `too_early = interval_us * early_offset / 100` with
+        // `early_offset in 1..=99` is always `< interval_us` by integer
+        // division, so no `prop_assume!` guard is required.
+        let too_early = (interval_us * early_offset) / 100;
+        prop_assert!(model.next_payload(too_early).is_none());
+        // At exactly interval_us, the next payload becomes available.
+        prop_assert!(model.next_payload(interval_us).is_some());
+    }
+}
