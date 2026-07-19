@@ -5,23 +5,31 @@ on:
     branches: [ main ]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# Runner policy: Linux jobs run on the self-hosted fleet. Label with exactly
+# [self-hosted, Linux] — never add arch labels: the fleet spans arm64 and
+# x86_64 hosts and jobs must stay schedulable on both. The runner image bakes
+# a pinned stable toolchain (rustfmt + clippy), so there is no toolchain
+# action, and no cache action either: the fleet mounts persistent cargo
+# registry/target volumes, which is what makes these jobs fast. Tools like
+# cargo-audit/cargo-deny/cargo-tarpaulin live in the fleet's shared cargo
+# cache, so the `cargo install` steps below are no-ops after the first run.
 jobs:
   autoformat:
     name: Autoformat
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
       - name: Run cargo fmt
         run: cargo fmt --all
       - name: Run cargo clippy fix
@@ -34,57 +42,47 @@ jobs:
 
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
     needs: autoformat
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Run cargo check
         run: cargo check --all-features
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
     needs: autoformat
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --all-features
 
   audit:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run cargo audit
+        run: cargo install cargo-audit && cargo audit
 
   deny:
     name: Cargo Deny
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          log-level: warn
-          command: check
-          arguments: --all-features
+      - name: Run cargo deny
+        run: cargo install cargo-deny && cargo deny --all-features --log-level warn check
 
   coverage:
     name: Code Coverage
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
     needs: autoformat
     environment: codecov
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin --locked
       - name: Run tarpaulin
