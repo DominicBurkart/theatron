@@ -87,6 +87,8 @@ jobs:
         run: cargo install cargo-tarpaulin --locked
       - name: Run tarpaulin
         run: cargo tarpaulin --ignore-tests --out xml --output-dir coverage
+      - name: Install gpg (codecov-action verifies its CLI signature with it)
+        run: command -v gpg >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq gnupg)
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
